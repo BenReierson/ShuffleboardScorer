@@ -5,6 +5,8 @@
 // - See README at bottom of this file for a quick local-HTTPS method.
 
 (() => {
+  const BUILD = "v4";
+
   const $ = (sel) => document.querySelector(sel);
   const video = $("#video");
   const overlay = $("#overlay");
@@ -19,6 +21,9 @@
   const gameSummaryEl = $("#gameSummary");
   const roundGridBody = $("#roundGridBody");
   const hintText = $("#hintText");
+  const buildVersionEl = $("#buildVersion");
+  if (buildVersionEl) buildVersionEl.textContent = BUILD;
+  document.title = `Garage Shuffleboard Scorer ${BUILD}`;
 
   const LS_KEY = "shuffleboard_mvp_v1";
 
@@ -601,6 +606,37 @@
           <div class="grow"><input id="puckTol" type="range" min="0.15" max="0.7" step="0.05" value="${cfg.puckRadiusTolerance}" /></div>
           <div class="badge">±${Math.round(cfg.puckRadiusTolerance*100)}%</div>
         </div>
+        <div class="sep"></div>
+        <div class="hint"><b>Detection tuning</b> (adjust until you see exactly your pucks, stable)</div>
+        <div class="row">
+          <label>Global S min</label>
+          <div class="grow"><input id="sMin" type="range" min="0.10" max="0.90" step="0.02" value="${cfg.colors.sMin}" /></div>
+          <div class="badge">${cfg.colors.sMin.toFixed(2)}</div>
+        </div>
+        <div class="row">
+          <label>Global V min</label>
+          <div class="grow"><input id="vMin" type="range" min="0.05" max="0.90" step="0.02" value="${cfg.colors.vMin}" /></div>
+          <div class="badge">${cfg.colors.vMin.toFixed(2)}</div>
+        </div>
+        <div class="row">
+          <label>Red hue tol</label>
+          <div class="grow"><input id="redHTol" type="range" min="6" max="60" step="1" value="${cfg.colors.red.hTol}" /></div>
+          <div class="badge">±${Math.round(cfg.colors.red.hTol)}°</div>
+        </div>
+        <div class="row">
+          <label>Blue hue tol</label>
+          <div class="grow"><input id="blueHTol" type="range" min="6" max="60" step="1" value="${cfg.colors.blue.hTol}" /></div>
+          <div class="badge">±${Math.round(cfg.colors.blue.hTol)}°</div>
+        </div>
+        <div class="row">
+          <button class="btn grow" id="btnLoosen">Loosen</button>
+          <button class="btn grow" id="btnTighten">Tighten</button>
+        </div>
+        <div class="row">
+          <button class="btn primary grow" id="btnTestDetect">Test detection now</button>
+          <div class="badge" id="detectSummary">—</div>
+        </div>
+
         ${common}
         <div class="sep"></div>
         <div class="row">
@@ -692,6 +728,20 @@
 
     const pt = $("#puckTol");
     if (pt) pt.oninput = (e) => { State.config.puckRadiusTolerance = Number(e.target.value); saveConfig(); render(); };
+
+    const sMinEl = $("#sMin");
+    if (sMinEl) sMinEl.oninput = (e) => { State.config.colors.sMin = Number(e.target.value); saveConfig(); render(); };
+
+    const vMinEl = $("#vMin");
+    if (vMinEl) vMinEl.oninput = (e) => { State.config.colors.vMin = Number(e.target.value); saveConfig(); render(); };
+
+    const redHTolEl = $("#redHTol");
+    if (redHTolEl) redHTolEl.oninput = (e) => { State.config.colors.red.hTol = Number(e.target.value); saveConfig(); render(); };
+
+    const blueHTolEl = $("#blueHTol");
+    if (blueHTolEl) blueHTolEl.oninput = (e) => { State.config.colors.blue.hTol = Number(e.target.value); saveConfig(); render(); };
+
+
 
     const tp = $("#togglePreview");
     if (tp) tp.onchange = (e) => { State.detectionPreview.enabled = !!e.target.checked; };
@@ -968,7 +1018,7 @@
     const live = getLiveDetections();
     const puckRadiusPx = State.config.puckRadius * devicePixelRatio;
 
-    if (live && live.pucks && State.mode !== "calibrate_triangle") {
+    if (live && live.pucks) {
       // If we have scoring available, use it to label points; else just show color.
       const byKey = new Map();
       if (live.scored && live.scored.results) {
