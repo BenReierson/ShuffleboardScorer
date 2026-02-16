@@ -29,6 +29,7 @@
     config: null,
     game: null,
     detectionPreview: { enabled: true },
+    detectCache: { ts: 0, pucks: [], scored: null },
   };
 
   // ---------- Default config ----------
@@ -36,7 +37,7 @@
     return {
       lineThickness: 1, // px in overlay / video coordinate space
       puckRadius: 18,    // px (set in calibration)
-      puckRadiusTolerance: 0.35, // +/- 35% area/size acceptance
+      puckRadiusTolerance: 0.25, // +/- 35% area/size acceptance
       touchEpsilon: 1.0, // px additional tolerance for "touching a line"
 
       // Geometry in video coordinate space (filled during calibration)
@@ -58,8 +59,8 @@
       colors: {
         red: { h: 0, s: 0.55, v: 0.35, hTol: 22 },  // seed values; user samples
         blue:{ h: 210, s: 0.50, v: 0.30, hTol: 25 },
-        sMin: 0.35,
-        vMin: 0.20,
+        sMin: 0.45,
+        vMin: 0.18,
       }
     };
   }
@@ -206,8 +207,7 @@
 
   // ---------- Simple connected-component blob detection ----------
   // Works on a small processing size and returns centers in overlay coordinates.
-  function detectPucksSnapshot() {
-    const rect = overlay.getBoundingClientRect();
+  function detectPucksSnapshot(opts = {}) {
     const W = overlay.width;
     const H = overlay.height;
 
@@ -218,158 +218,233 @@
     const procW = Math.round(W / 2);
     const procH = Math.round(H / 2);
 
-    // Create a temp canvas (offscreen) by scaling draw onto itself via drawImage
-    // We'll just use getImageData on a scaled image by drawing to an ImageData-sized buffer
-    const tmp = document.createElement("canvas");
+    // Draw scaled frame into temp canvas for pixel access
+    const tmp = detectPucksSnapshot._tmp || (detectPucksSnapshot._tmp = document.createElement("canvas"));
     tmp.width = procW; tmp.height = procH;
-    const tctx = tmp.getContext("2d", { willReadFrequently: true });
+    const tctx = detectPucksSnapshot._tctx || (detectPucksSnapshot._tctx = tmp.getContext("2d", { willReadFrequently: true }));
     tctx.drawImage(work, 0, 0, procW, procH);
 
     const img = tctx.getImageData(0,0,procW,procH);
     const data = img.data;
 
-    // label arrays for red and blue separately
-    const labelsR = new Int32Array(procW*procH);
-    const labelsB = new Int32Array(procW*procH);
-
-    // Union-Find
-    function ufInit(max){
-      return { parent: Array.from({length:max+1}, (_,i)=>i), rank: new Int8Array(max+1) };
-    }
-    function ufFind(uf, x){
-      let p = uf.parent[x];
-      while (p !== uf.parent[p]) p = uf.parent[p];
-      while (x !== p){
-        const nx = uf.parent[x];
-        uf.parent[x] = p;
-        x = nx;
-      }
-      return p;
-    }
-    function ufUnion(uf, a,b){
-      a = ufFind(uf,a); b = ufFind(uf,b);
-      if (a===b) return;
-      if (uf.rank[a] < uf.rank[b]) uf.parent[a] = b;
-      else if (uf.rank[a] > uf.rank[b]) uf.parent[b] = a;
-      else { uf.parent[b]=a; uf.rank[a]++; }
+    // Optional ROI: restrict detections to inside triangle (greatly reduces false positives).
+    // We shrink ROI slightly to avoid detecting the colored boundary lines.
+    const useROI = opts.roi !== false && State.config?.tri;
+    let At, Bt, Ct;
+    if (useROI) {
+      ensureTipIsC();
+      const shrink = Math.max(6, State.config.lineThickness * 2); // px in overlay space
+      // Convert triangle to proc-space
+      const A = scale(State.config.tri.A), B = scale(State.config.tri.B), C = scale(State.config.tri.C);
+      At = { x: (A.x / devicePixelRatio) * (procW / (W/devicePixelRatio)), y: (A.y / devicePixelRatio) * (procH / (H/devicePixelRatio)) };
+      Bt = { x: (B.x / devicePixelRatio) * (procW / (W/devicePixelRatio)), y: (B.y / devicePixelRatio) * (procH / (H/devicePixelRatio)) };
+      Ct = { x: (C.x / devicePixelRatio) * (procW / (W/devicePixelRatio)), y: (C.y / devicePixelRatio) * (procH / (H/devicePixelRatio)) };
+      // Note: shrink is handled later via edge distance filter.
     }
 
-    // First pass CCL (4-connected), separate for each team
-    function labelFor(mask, labels){
-      let next = 1;
-      const uf = ufInit(procW*procH/2|0); // over-allocate; adjust later if needed
-      // We'll grow uf.parent dynamically if next exceeds
-      function ensureUF(n){
-        if (n < uf.parent.length) return;
-        const old = uf.parent.length;
-        const newLen = Math.max(n+1, old*2);
-        uf.parent.length = newLen;
-        for (let i=old;i<newLen;i++) uf.parent[i]=i;
-        const nr = new Int8Array(newLen);
-        nr.set(uf.rank);
-        uf.rank = nr;
-      }
-
-      for (let y=0; y<procH; y++){
-        for (let x=0; x<procW; x++){
-          const i = y*procW + x;
-          if (!mask[i]) { labels[i]=0; continue; }
-          const left = (x>0) ? labels[i-1] : 0;
-          const up = (y>0) ? labels[i-procW] : 0;
-          if (left===0 && up===0){
-            labels[i]=next;
-            ensureUF(next+1);
-            next++;
-          } else if (left!==0 && up===0){
-            labels[i]=left;
-          } else if (left===0 && up!==0){
-            labels[i]=up;
-          } else {
-            labels[i]=Math.min(left, up);
-            if (left!==up) ufUnion(uf, left, up);
-          }
-        }
-      }
-
-      // Second pass: compress + stats
-      const stats = new Map(); // root -> {area,sumx,sumy,minx,maxx,miny,maxy}
-      for (let i=0;i<labels.length;i++){
-        const lab = labels[i];
-        if (!lab) continue;
-        const root = ufFind(uf, lab);
-        labels[i]=root;
-        const x = i % procW;
-        const y = (i / procW) | 0;
-        let s = stats.get(root);
-        if (!s){
-          s = { area:0, sumx:0, sumy:0, minx:x, maxx:x, miny:y, maxy:y };
-          stats.set(root, s);
-        }
-        s.area++;
-        s.sumx += x;
-        s.sumy += y;
-        s.minx = Math.min(s.minx, x);
-        s.maxx = Math.max(s.maxx, x);
-        s.miny = Math.min(s.miny, y);
-        s.maxy = Math.max(s.maxy, y);
-      }
-
-      return Array.from(stats.values()).map(s => {
-        const cx = s.sumx / s.area;
-        const cy = s.sumy / s.area;
-        const radius = Math.sqrt(s.area / Math.PI);
-        return { cx, cy, area: s.area, radius, bbox: {x0:s.minx,y0:s.miny,x1:s.maxx,y1:s.maxy} };
-      });
-    }
-
-    // Build masks by classifying pixels
+    // Masks
     const maskR = new Uint8Array(procW*procH);
     const maskB = new Uint8Array(procW*procH);
 
+    const colors = State.config.colors;
+    const redT = colors.red;
+    const blueT = colors.blue;
+
+    // A stricter "isColor" for detection (less flicker):
+    // - requires S/V above global minimums
+    // - and hue close to target
+    // - and also uses channel dominance as a cheap extra guardrail
+    function classifyPixel(r,g,b){
+      const hsv = rgbToHsv(r,g,b);
+      if (hsv.s < colors.sMin || hsv.v < colors.vMin) return 0;
+
+      const dr = hueDist(hsv.h, redT.h);
+      const db = hueDist(hsv.h, blueT.h);
+
+      // Quick RGB dominance checks help reject wood grain and colored lines.
+      // (Not perfect, but good for this specific board.)
+      const isRedish = (r > g + 18) && (r > b + 18);
+      const isBluish = (b > r + 10) && (b > g + 10);
+
+      if (dr <= redT.hTol && hsv.s >= redT.s && hsv.v >= redT.v && isRedish) return 1; // red
+      if (db <= blueT.hTol && hsv.s >= blueT.s && hsv.v >= blueT.v && isBluish) return 2; // blue
+      // If neither dominance check passes, still allow *very* close hue matches as fallback.
+      if (dr <= Math.max(12, redT.hTol*0.5) && hsv.s >= Math.max(colors.sMin, redT.s) && hsv.v >= Math.max(colors.vMin, redT.v)) return 1;
+      if (db <= Math.max(12, blueT.hTol*0.5) && hsv.s >= Math.max(colors.sMin, blueT.s) && hsv.v >= Math.max(colors.vMin, blueT.v)) return 2;
+      return 0;
+    }
+
+    // Fill masks
     for (let y=0; y<procH; y++){
       for (let x=0; x<procW; x++){
-        const idx = (y*procW + x);
+        const idx = y*procW + x;
         const p = idx*4;
         const r = data[p], g = data[p+1], b = data[p+2];
-        const hsv = rgbToHsv(r,g,b);
-        if (isColor(hsv, State.config.colors.red)) maskR[idx]=1;
-        if (isColor(hsv, State.config.colors.blue)) maskB[idx]=1;
+
+        // ROI check (cheap): if outside triangle, skip.
+        if (useROI) {
+          const pt = { x, y };
+          if (!pointInTri(pt, At, Bt, Ct)) continue;
+        }
+
+        const c = classifyPixel(r,g,b);
+        if (c === 1) maskR[idx]=1;
+        else if (c === 2) maskB[idx]=1;
       }
     }
 
-    // Label & extract blobs
-    const blobsR = labelFor(maskR, labelsR);
-    const blobsB = labelFor(maskB, labelsB);
+    // Simple morphology to reduce speckle noise (JS-friendly)
+    function erode(src, w, h, minNeighbors){
+      const dst = new Uint8Array(src.length);
+      for (let y=1; y<h-1; y++){
+        for (let x=1; x<w-1; x++){
+          const i = y*w + x;
+          if (!src[i]) continue;
+          let n=0;
+          // 3x3 neighborhood count
+          for (let yy=-1; yy<=1; yy++){
+            const row = (y+yy)*w;
+            for (let xx=-1; xx<=1; xx++){
+              n += src[row + (x+xx)] ? 1 : 0;
+            }
+          }
+          if (n >= minNeighbors) dst[i]=1;
+        }
+      }
+      return dst;
+    }
+    function dilate(src, w, h, minNeighbors){
+      const dst = new Uint8Array(src.length);
+      for (let y=1; y<h-1; y++){
+        for (let x=1; x<w-1; x++){
+          const i = y*w + x;
+          let n=0;
+          for (let yy=-1; yy<=1; yy++){
+            const row = (y+yy)*w;
+            for (let xx=-1; xx<=1; xx++){
+              n += src[row + (x+xx)] ? 1 : 0;
+            }
+          }
+          if (n >= minNeighbors) dst[i]=1;
+        }
+      }
+      return dst;
+    }
 
-    // Convert to overlay coordinates and filter by size around expected puck radius
+    // open + close-ish: erode -> dilate -> dilate -> erode
+    const m1r = erode(maskR, procW, procH, 5);
+    const m2r = dilate(m1r, procW, procH, 3);
+    const m3r = dilate(m2r, procW, procH, 3);
+    const cleanR = erode(m3r, procW, procH, 4);
+
+    const m1b = erode(maskB, procW, procH, 5);
+    const m2b = dilate(m1b, procW, procH, 3);
+    const m3b = dilate(m2b, procW, procH, 3);
+    const cleanB = erode(m3b, procW, procH, 4);
+
+    // Connected components (single pass flood fill for each mask)
+    function extractBlobs(mask){
+      const visited = new Uint8Array(mask.length);
+      const blobs = [];
+      const stack = [];
+      for (let i=0; i<mask.length; i++){
+        if (!mask[i] || visited[i]) continue;
+        visited[i]=1;
+        stack.length=0;
+        stack.push(i);
+
+        let area=0, sumx=0, sumy=0, minx=1e9, miny=1e9, maxx=-1e9, maxy=-1e9;
+        while (stack.length){
+          const idx = stack.pop();
+          const x = idx % procW;
+          const y = (idx / procW) | 0;
+          area++;
+          sumx += x; sumy += y;
+          if (x<minx) minx=x;
+          if (y<miny) miny=y;
+          if (x>maxx) maxx=x;
+          if (y>maxy) maxy=y;
+
+          // 4-neighbors
+          const up = idx - procW;
+          const dn = idx + procW;
+          const lf = idx - 1;
+          const rt = idx + 1;
+
+          if (y>0 && mask[up] && !visited[up]){ visited[up]=1; stack.push(up); }
+          if (y<procH-1 && mask[dn] && !visited[dn]){ visited[dn]=1; stack.push(dn); }
+          if (x>0 && mask[lf] && !visited[lf]){ visited[lf]=1; stack.push(lf); }
+          if (x<procW-1 && mask[rt] && !visited[rt]){ visited[rt]=1; stack.push(rt); }
+        }
+
+        const cx = sumx/area;
+        const cy = sumy/area;
+        const radius = Math.sqrt(area / Math.PI);
+        const w = (maxx-minx+1), h = (maxy-miny+1);
+        blobs.push({ area, cx, cy, radius, bbox:{minx,miny,maxx,maxy,w,h} });
+      }
+      return blobs;
+    }
+
+    const blobsR = extractBlobs(cleanR);
+    const blobsB = extractBlobs(cleanB);
+
+    // Convert blobs to overlay space and filter by expected puck radius + circularity-ish constraints.
     const scaleX = W / procW;
     const scaleY = H / procH;
-    const expR = State.config.puckRadius / ((scaleX+scaleY)/2);
+
+    // expected radius in proc-space
+    const expR = (State.config.puckRadius / ((scaleX+scaleY)/2));
     const tol = State.config.puckRadiusTolerance;
 
-    function filter(blobs){
+    function filter(blobs, team){
       const out = [];
       for (const b of blobs){
-        // basic sanity: not tiny specks
-        if (b.area < 80) continue;
+        if (b.area < 180) continue; // remove tiny specks
         const rr = b.radius;
         if (rr < expR*(1-tol) || rr > expR*(1+tol)) continue;
 
+        // aspect ratio close to 1 for circular blobs
+        const ar = b.bbox.w / b.bbox.h;
+        if (ar < 0.65 || ar > 1.55) continue;
+
+        // ROI edge clearance to avoid boundary-line blobs (approx)
+        if (useROI){
+          const center = { x: b.cx, y: b.cy };
+          // Distance to triangle edges in proc-space (approx), require > (expR*0.6)
+          const minClear = expR*0.6;
+          const edges = [
+            {a:At, b:Bt},
+            {a:Bt, b:Ct},
+            {a:Ct, b:At},
+          ];
+          let ok=true;
+          for (const e of edges){
+            const d = distancePointToSegment(center, e.a, e.b);
+            if (d < minClear){ ok=false; break; }
+          }
+          if (!ok) continue;
+        }
+
         out.push({
+          team,
           x: b.cx * scaleX,
           y: b.cy * scaleY,
           radius: rr * ((scaleX+scaleY)/2),
         });
       }
-      return out;
+
+      // Keep only the strongest few blobs (prevents many tiny false positives)
+      out.sort((a,b)=>b.radius-a.radius);
+      return out.slice(0, 8);
     }
 
-    const red = filter(blobsR).map(o => ({...o, team:"red"}));
-    const blue = filter(blobsB).map(o => ({...o, team:"blue"}));
+    const red = filter(blobsR, "red");
+    const blue = filter(blobsB, "blue");
     return [...red, ...blue];
   }
 
-  // ---------- Scoring ----------
+// ---------- Scoring ----------
   function scoreRound(pucks) {
     ensureTipIsC();
     const { tri, lines, puckRadius, lineThickness, touchEpsilon } = State.config;
@@ -544,7 +619,7 @@
           <button class="btn grow" id="btnBack">Back</button>
           <button class="btn primary grow" id="btnFinish">Finish calibration</button>
         </div>
-        <div class="kbd">While sampling: click on the puck plastic (not the shiny metal center).</div>
+        <div class="kbd">While sampling: click on the puck plastic (not the shiny metal center). Detected pucks will be drawn with labels.</div>
       `;
     }
 
@@ -753,8 +828,8 @@
   function doScoreRound() {
     if (!State.game || State.mode !== "game") return;
 
-    // Detect pucks in this frame
-    const pucks = detectPucksSnapshot();
+    // Use the same detection pipeline as the overlay (fresh snapshot)
+    const pucks = detectPucksSnapshot({ roi: true });
     const scored = scoreRound(pucks);
 
     // Record round
@@ -789,6 +864,21 @@
   };
 
   // ---------- Overlay drawing ----------
+
+  function getLiveDetections() {
+    const now = performance.now();
+    const interval = (State.mode === "game") ? 250 : 350; // ms
+    if (now - State.detectCache.ts < interval) return State.detectCache;
+    const pucks = detectPucksSnapshot({ roi: State.mode !== "calibrate_triangle" });
+    let scored = null;
+    // Only score if triangle+lines likely set (after triangle step)
+    if (State.mode !== "calibrate_triangle") {
+      scored = scoreRound(pucks);
+    }
+    State.detectCache = { ts: now, pucks, scored };
+    return State.detectCache;
+  }
+
   function drawOverlay() {
     const W = overlay.width, H = overlay.height;
     ctx.clearRect(0,0,W,H);
@@ -871,45 +961,52 @@
           ctx.fillText(`Click a ${State.drag.team.toUpperCase()} puck…`, 14*devicePixelRatio, 20*devicePixelRatio);
           ctx.restore();
         }
-
-        // Detection preview
-        if (State.detectionPreview.enabled) {
-          const pucks = detectPucksSnapshot();
-          for (const p of pucks) {
-            const col = p.team === "blue" ? "rgba(74,163,255,0.95)" : "rgba(255,91,91,0.95)";
-            ctx.save();
-            ctx.strokeStyle = col;
-            ctx.lineWidth = 3*devicePixelRatio;
-            ctx.beginPath();
-            ctx.arc(p.x*devicePixelRatio, p.y*devicePixelRatio, p.radius*devicePixelRatio, 0, Math.PI*2);
-            ctx.stroke();
-            ctx.restore();
-          }
-        }
       }
     }
 
-    // In-game: show last detection & scored pucks overlay
-    if (State.mode === "game" && State.lastFrame?.pucks) {
-      for (const p of State.lastFrame.pucks) {
-        const center = { x: p.x*devicePixelRatio, y: p.y*devicePixelRatio };
+    // Live detections overlay (during calibration and play)
+    const live = getLiveDetections();
+    const puckRadiusPx = State.config.puckRadius * devicePixelRatio;
+
+    if (live && live.pucks && State.mode !== "calibrate_triangle") {
+      // If we have scoring available, use it to label points; else just show color.
+      const byKey = new Map();
+      if (live.scored && live.scored.results) {
+        for (const r of live.scored.results) {
+          // Key by approximate position
+          byKey.set(`${Math.round(r.x)}:${Math.round(r.y)}:${r.team}`, r);
+        }
+      }
+
+      for (const p of live.pucks) {
+        const key = `${Math.round(p.x)}:${Math.round(p.y)}:${p.team}`;
+        const scored = byKey.get(key);
+        const points = scored ? scored.points : 0;
+        const valid = scored ? scored.valid : true;
+
         const col = p.team === "blue" ? "rgba(74,163,255,0.95)" : "rgba(255,91,91,0.95)";
         ctx.save();
         ctx.strokeStyle = col;
         ctx.lineWidth = 3*devicePixelRatio;
         ctx.beginPath();
-        ctx.arc(center.x, center.y, cfg.puckRadius*devicePixelRatio, 0, Math.PI*2);
+        ctx.arc(p.x*devicePixelRatio, p.y*devicePixelRatio, puckRadiusPx, 0, Math.PI*2);
         ctx.stroke();
 
-        // label
-        ctx.fillStyle = p.valid ? col : "rgba(255,255,255,0.85)";
+        // label background
+        const label = (live.scored ? `${points}` : p.team.toUpperCase());
         ctx.font = `${14*devicePixelRatio}px system-ui`;
-        const label = p.valid ? `${p.points}` : "0";
-        ctx.fillText(label, center.x + 8*devicePixelRatio, center.y - 8*devicePixelRatio);
+        const tx = p.x*devicePixelRatio + 10*devicePixelRatio;
+        const ty = p.y*devicePixelRatio - 10*devicePixelRatio;
+
+        ctx.fillStyle = valid ? "rgba(0,0,0,0.55)" : "rgba(0,0,0,0.75)";
+        const m = ctx.measureText(label);
+        ctx.fillRect(tx-4*devicePixelRatio, ty-14*devicePixelRatio, (m.width+8*devicePixelRatio), 18*devicePixelRatio);
+
+        ctx.fillStyle = valid ? col : "rgba(255,255,255,0.9)";
+        ctx.fillText(label, tx, ty);
         ctx.restore();
       }
-    }
-  }
+    }  }
 
   function drawHandle(p, label, small=false) {
     ctx.save();

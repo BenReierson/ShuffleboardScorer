@@ -43,6 +43,6 @@ Usage
    - App detects red/blue pucks and scores only those fully inside a zone, not touching any lines.
 
 Notes / Known MVP limitations
-- Detection is simple HSV thresholding + blob detection (works best with stable lighting).
+- Detection uses HSV color classification + morphology + blob filtering, restricted to the triangle ROI to reduce false positives.
 - Scoring uses “circle must be farther than puckRadius + lineThickness/2 + epsilon from any boundary”.
 - If you move the iPad, you may need to recalibrate (or tweak line thickness / epsilon).
