@@ -34,7 +34,7 @@
   // ---------- Default config ----------
   function defaultConfig() {
     return {
-      lineThickness: 10, // px in overlay / video coordinate space
+      lineThickness: 1, // px in overlay / video coordinate space
       puckRadius: 18,    // px (set in calibration)
       puckRadiusTolerance: 0.35, // +/- 35% area/size acceptance
       touchEpsilon: 1.0, // px additional tolerance for "touching a line"
@@ -48,9 +48,10 @@
       // Three boundary lines separating 10|8, 8|7, 7|-10
       // Each line is a segment with endpoints in video coords
       lines: [
-        { p1: { x: 430, y: 260 }, p2: { x: 430, y: 340 } }, // between 10 and 8 (near tip)
-        { p1: { x: 340, y: 230 }, p2: { x: 360, y: 380 } }, // between 8 and 7
-        { p1: { x: 220, y: 200 }, p2: { x: 260, y: 420 } }, // between 7 and -10 (near base)
+        // Default: vertical dividers (you'll drag to match the painted lines)
+        { p1: { x: 430, y: 210 }, p2: { x: 430, y: 390 } }, // 10 | 8
+        { p1: { x: 330, y: 210 }, p2: { x: 330, y: 420 } }, // 8 | 7
+        { p1: { x: 230, y: 210 }, p2: { x: 230, y: 450 } }, // 7 | -10
       ],
       // Color thresholds (HSV-ish) for red/blue
       // Hue in [0,360), S and V in [0,1]
