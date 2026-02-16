@@ -1,3 +1,5 @@
+Build v5: adds sticker-based detection (black=blue, white=red).
+
 Garage Shuffleboard Scorer — MVP (iPad Safari)
 
 What you got:

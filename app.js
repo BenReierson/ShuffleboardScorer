@@ -5,7 +5,7 @@
 // - See README at bottom of this file for a quick local-HTTPS method.
 
 (() => {
-  const BUILD = "v4";
+  const BUILD = "v5";
 
   const $ = (sel) => document.querySelector(sel);
   const video = $("#video");
@@ -40,6 +40,7 @@
   // ---------- Default config ----------
   function defaultConfig() {
     return {
+      detectorMode: "sticker", // sticker | color
       lineThickness: 1, // px in overlay / video coordinate space
       puckRadius: 18,    // px (set in calibration)
       puckRadiusTolerance: 0.25, // +/- 35% area/size acceptance
@@ -62,10 +63,19 @@
       // Color thresholds (HSV-ish) for red/blue
       // Hue in [0,360), S and V in [0,1]
       colors: {
-        red: { h: 0, s: 0.55, v: 0.35, hTol: 22 },  // seed values; user samples
+        red: { h: 0, s: 0.55, v: 0.35, hTol: 22 },  // legacy color mode
         blue:{ h: 210, s: 0.50, v: 0.30, hTol: 25 },
         sMin: 0.45,
         vMin: 0.18,
+      },
+      stickers: {
+        // Black sticker on BLUE pucks, white sticker on RED pucks
+        blackThresh: 60,
+        whiteThresh: 200,
+        minArea: 80,
+        maxArea: 6000,
+        aspectMin: 0.6,
+        aspectMax: 1.7,
       }
     };
   }
@@ -232,73 +242,20 @@
     const img = tctx.getImageData(0,0,procW,procH);
     const data = img.data;
 
-    // Optional ROI: restrict detections to inside triangle (greatly reduces false positives).
-    // We shrink ROI slightly to avoid detecting the colored boundary lines.
+    // ROI restriction
     const useROI = opts.roi !== false && State.config?.tri;
     let At, Bt, Ct;
     if (useROI) {
       ensureTipIsC();
-      const shrink = Math.max(6, State.config.lineThickness * 2); // px in overlay space
-      // Convert triangle to proc-space
       const A = scale(State.config.tri.A), B = scale(State.config.tri.B), C = scale(State.config.tri.C);
-      At = { x: (A.x / devicePixelRatio) * (procW / (W/devicePixelRatio)), y: (A.y / devicePixelRatio) * (procH / (H/devicePixelRatio)) };
-      Bt = { x: (B.x / devicePixelRatio) * (procW / (W/devicePixelRatio)), y: (B.y / devicePixelRatio) * (procH / (H/devicePixelRatio)) };
-      Ct = { x: (C.x / devicePixelRatio) * (procW / (W/devicePixelRatio)), y: (C.y / devicePixelRatio) * (procH / (H/devicePixelRatio)) };
-      // Note: shrink is handled later via edge distance filter.
+      const sx = procW / (W/devicePixelRatio);
+      const sy = procH / (H/devicePixelRatio);
+      At = { x: (A.x / devicePixelRatio) * sx, y: (A.y / devicePixelRatio) * sy };
+      Bt = { x: (B.x / devicePixelRatio) * sx, y: (B.y / devicePixelRatio) * sy };
+      Ct = { x: (C.x / devicePixelRatio) * sx, y: (C.y / devicePixelRatio) * sy };
     }
 
-    // Masks
-    const maskR = new Uint8Array(procW*procH);
-    const maskB = new Uint8Array(procW*procH);
-
-    const colors = State.config.colors;
-    const redT = colors.red;
-    const blueT = colors.blue;
-
-    // A stricter "isColor" for detection (less flicker):
-    // - requires S/V above global minimums
-    // - and hue close to target
-    // - and also uses channel dominance as a cheap extra guardrail
-    function classifyPixel(r,g,b){
-      const hsv = rgbToHsv(r,g,b);
-      if (hsv.s < colors.sMin || hsv.v < colors.vMin) return 0;
-
-      const dr = hueDist(hsv.h, redT.h);
-      const db = hueDist(hsv.h, blueT.h);
-
-      // Quick RGB dominance checks help reject wood grain and colored lines.
-      // (Not perfect, but good for this specific board.)
-      const isRedish = (r > g + 18) && (r > b + 18);
-      const isBluish = (b > r + 10) && (b > g + 10);
-
-      if (dr <= redT.hTol && hsv.s >= redT.s && hsv.v >= redT.v && isRedish) return 1; // red
-      if (db <= blueT.hTol && hsv.s >= blueT.s && hsv.v >= blueT.v && isBluish) return 2; // blue
-      // If neither dominance check passes, still allow *very* close hue matches as fallback.
-      if (dr <= Math.max(12, redT.hTol*0.5) && hsv.s >= Math.max(colors.sMin, redT.s) && hsv.v >= Math.max(colors.vMin, redT.v)) return 1;
-      if (db <= Math.max(12, blueT.hTol*0.5) && hsv.s >= Math.max(colors.sMin, blueT.s) && hsv.v >= Math.max(colors.vMin, blueT.v)) return 2;
-      return 0;
-    }
-
-    // Fill masks
-    for (let y=0; y<procH; y++){
-      for (let x=0; x<procW; x++){
-        const idx = y*procW + x;
-        const p = idx*4;
-        const r = data[p], g = data[p+1], b = data[p+2];
-
-        // ROI check (cheap): if outside triangle, skip.
-        if (useROI) {
-          const pt = { x, y };
-          if (!pointInTri(pt, At, Bt, Ct)) continue;
-        }
-
-        const c = classifyPixel(r,g,b);
-        if (c === 1) maskR[idx]=1;
-        else if (c === 2) maskB[idx]=1;
-      }
-    }
-
-    // Simple morphology to reduce speckle noise (JS-friendly)
+    // Morphology helpers (3x3)
     function erode(src, w, h, minNeighbors){
       const dst = new Uint8Array(src.length);
       for (let y=1; y<h-1; y++){
@@ -306,7 +263,6 @@
           const i = y*w + x;
           if (!src[i]) continue;
           let n=0;
-          // 3x3 neighborhood count
           for (let yy=-1; yy<=1; yy++){
             const row = (y+yy)*w;
             for (let xx=-1; xx<=1; xx++){
@@ -335,19 +291,14 @@
       }
       return dst;
     }
+    function clean(mask){
+      const m1 = erode(mask, procW, procH, 5);
+      const m2 = dilate(m1, procW, procH, 3);
+      const m3 = dilate(m2, procW, procH, 3);
+      return erode(m3, procW, procH, 4);
+    }
 
-    // open + close-ish: erode -> dilate -> dilate -> erode
-    const m1r = erode(maskR, procW, procH, 5);
-    const m2r = dilate(m1r, procW, procH, 3);
-    const m3r = dilate(m2r, procW, procH, 3);
-    const cleanR = erode(m3r, procW, procH, 4);
-
-    const m1b = erode(maskB, procW, procH, 5);
-    const m2b = dilate(m1b, procW, procH, 3);
-    const m3b = dilate(m2b, procW, procH, 3);
-    const cleanB = erode(m3b, procW, procH, 4);
-
-    // Connected components (single pass flood fill for each mask)
+    // Blob extraction via flood fill
     function extractBlobs(mask){
       const visited = new Uint8Array(mask.length);
       const blobs = [];
@@ -370,7 +321,6 @@
           if (x>maxx) maxx=x;
           if (y>maxy) maxy=y;
 
-          // 4-neighbors
           const up = idx - procW;
           const dn = idx + procW;
           const lf = idx - 1;
@@ -391,46 +341,124 @@
       return blobs;
     }
 
-    const blobsR = extractBlobs(cleanR);
-    const blobsB = extractBlobs(cleanB);
-
-    // Convert blobs to overlay space and filter by expected puck radius + circularity-ish constraints.
     const scaleX = W / procW;
     const scaleY = H / procH;
 
-    // expected radius in proc-space
-    const expR = (State.config.puckRadius / ((scaleX+scaleY)/2));
-    const tol = State.config.puckRadiusTolerance;
+    // --- Mode A: Sticker detection (recommended) ---
+    if (State.config.detectorMode === "sticker") {
+      const st = State.config.stickers;
 
-    function filter(blobs, team){
-      const out = [];
-      for (const b of blobs){
-        if (b.area < 180) continue; // remove tiny specks
-        const rr = b.radius;
-        if (rr < expR*(1-tol) || rr > expR*(1+tol)) continue;
+      const maskBlack = new Uint8Array(procW*procH);
+      const maskWhite = new Uint8Array(procW*procH);
 
-        // aspect ratio close to 1 for circular blobs
-        const ar = b.bbox.w / b.bbox.h;
-        if (ar < 0.65 || ar > 1.55) continue;
+      for (let y=0; y<procH; y++){
+        for (let x=0; x<procW; x++){
+          const idx = y*procW + x;
+          const p = idx*4;
+          const r = data[p], g = data[p+1], b = data[p+2];
 
-        // ROI edge clearance to avoid boundary-line blobs (approx)
-        if (useROI){
-          const center = { x: b.cx, y: b.cy };
-          // Distance to triangle edges in proc-space (approx), require > (expR*0.6)
-          const minClear = expR*0.6;
-          const edges = [
-            {a:At, b:Bt},
-            {a:Bt, b:Ct},
-            {a:Ct, b:At},
-          ];
-          let ok=true;
-          for (const e of edges){
-            const d = distancePointToSegment(center, e.a, e.b);
-            if (d < minClear){ ok=false; break; }
+          if (useROI) {
+            const pt = { x, y };
+            if (!pointInTri(pt, At, Bt, Ct)) continue;
           }
-          if (!ok) continue;
+
+          const gray = (0.2126*r + 0.7152*g + 0.0722*b);
+          if (gray <= st.blackThresh) maskBlack[idx]=1;
+          if (gray >= st.whiteThresh) maskWhite[idx]=1;
+        }
+      }
+
+      const cleanBlack = clean(maskBlack);
+      const cleanWhite = clean(maskWhite);
+
+      const blobsBlack = extractBlobs(cleanBlack);
+      const blobsWhite = extractBlobs(cleanWhite);
+
+      function filter(blobs, team){
+        const out = [];
+        for (const b of blobs){
+          if (b.area < st.minArea || b.area > st.maxArea) continue;
+          const ar = b.bbox.w / b.bbox.h;
+          if (ar < st.aspectMin || ar > st.aspectMax) continue;
+          if (Math.min(b.bbox.w, b.bbox.h) < 4) continue;
+
+          out.push({
+            team,
+            x: b.cx * scaleX,
+            y: b.cy * scaleY,
+            radius: State.config.puckRadius,
+            _area: b.area
+          });
+        }
+        out.sort((a,b)=>b._area-a._area);
+        return out.slice(0, 8);
+      }
+
+      // Black sticker => BLUE puck. White sticker => RED puck.
+      const blue = filter(blobsBlack, "blue");
+      const red  = filter(blobsWhite, "red");
+      return [...blue, ...red];
+    }
+
+    // --- Mode B: Legacy color detection (red/blue plastic) ---
+    const maskR = new Uint8Array(procW*procH);
+    const maskB = new Uint8Array(procW*procH);
+
+    const colors = State.config.colors;
+    const redT = colors.red;
+    const blueT = colors.blue;
+
+    function classifyPixel(r,g,b){
+      const hsv = rgbToHsv(r,g,b);
+      if (hsv.s < colors.sMin || hsv.v < colors.vMin) return 0;
+
+      const dr = hueDist(hsv.h, redT.h);
+      const db = hueDist(hsv.h, blueT.h);
+
+      const isRedish = (r > g + 18) && (r > b + 18);
+      const isBluish = (b > r + 10) && (b > g + 10);
+
+      if (dr <= redT.hTol && hsv.s >= redT.s && hsv.v >= redT.v && isRedish) return 1;
+      if (db <= blueT.hTol && hsv.s >= blueT.s && hsv.v >= blueT.v && isBluish) return 2;
+      if (dr <= Math.max(12, redT.hTol*0.5) && hsv.s >= Math.max(colors.sMin, redT.s) && hsv.v >= Math.max(colors.vMin, redT.v)) return 1;
+      if (db <= Math.max(12, blueT.hTol*0.5) && hsv.s >= Math.max(colors.sMin, blueT.s) && hsv.v >= Math.max(colors.vMin, blueT.v)) return 2;
+      return 0;
+    }
+
+    for (let y=0; y<procH; y++){
+      for (let x=0; x<procW; x++){
+        const idx = y*procW + x;
+        const p = idx*4;
+        const r = data[p], g = data[p+1], b = data[p+2];
+
+        if (useROI) {
+          const pt = { x, y };
+          if (!pointInTri(pt, At, Bt, Ct)) continue;
         }
 
+        const c = classifyPixel(r,g,b);
+        if (c === 1) maskR[idx]=1;
+        else if (c === 2) maskB[idx]=1;
+      }
+    }
+
+    const cleanR = clean(maskR);
+    const cleanB = clean(maskB);
+
+    const blobsR = extractBlobs(cleanR);
+    const blobsB = extractBlobs(cleanB);
+
+    const tol = State.config.puckRadiusTolerance;
+    const expR = (State.config.puckRadius / ((scaleX+scaleY)/2));
+
+    function filterColor(blobs, team){
+      const out = [];
+      for (const b of blobs){
+        if (b.area < 180) continue;
+        const rr = b.radius;
+        if (rr < expR*(1-tol) || rr > expR*(1+tol)) continue;
+        const ar = b.bbox.w / b.bbox.h;
+        if (ar < 0.65 || ar > 1.55) continue;
         out.push({
           team,
           x: b.cx * scaleX,
@@ -438,17 +466,14 @@
           radius: rr * ((scaleX+scaleY)/2),
         });
       }
-
-      // Keep only the strongest few blobs (prevents many tiny false positives)
       out.sort((a,b)=>b.radius-a.radius);
       return out.slice(0, 8);
     }
 
-    const red = filter(blobsR, "red");
-    const blue = filter(blobsB, "blue");
+    const red = filterColor(blobsR, "red");
+    const blue = filterColor(blobsB, "blue");
     return [...red, ...blue];
   }
-
 // ---------- Scoring ----------
   function scoreRound(pucks) {
     ensureTipIsC();
@@ -592,6 +617,13 @@
       const blue = cfg.colors.blue;
       return `
         <h3>Calibration 3/3 — Pucks</h3>
+        <div class="row">
+          <label>Detection mode</label>
+          <select id="detectorMode" class="grow">
+            <option value="sticker" ${cfg.detectorMode==="sticker"?"selected":""}>Sticker (black/white)</option>
+            <option value="color" ${cfg.detectorMode==="color"?"selected":""}>Legacy color (red/blue plastic)</option>
+          </select>
+        </div>
         <div class="hint">
           1) Adjust <b>puck radius</b> to match what you see.<br/>
           2) Click the <b>red puck</b>, then the <b>blue puck</b> in the video to sample their colors.
@@ -729,6 +761,9 @@
     const pt = $("#puckTol");
     if (pt) pt.oninput = (e) => { State.config.puckRadiusTolerance = Number(e.target.value); saveConfig(); render(); };
 
+    const detModeEl = $("#detectorMode");
+    if (detModeEl) detModeEl.onchange = (e) => { State.config.detectorMode = e.target.value; saveConfig(); render(); };
+
     const sMinEl = $("#sMin");
     if (sMinEl) sMinEl.oninput = (e) => { State.config.colors.sMin = Number(e.target.value); saveConfig(); render(); };
 
@@ -740,6 +775,12 @@
 
     const blueHTolEl = $("#blueHTol");
     if (blueHTolEl) blueHTolEl.oninput = (e) => { State.config.colors.blue.hTol = Number(e.target.value); saveConfig(); render(); };
+
+    const blackThreshEl = $("#blackThresh");
+    if (blackThreshEl) blackThreshEl.oninput = (e) => { State.config.stickers.blackThresh = Number(e.target.value); saveConfig(); render(); };
+
+    const whiteThreshEl = $("#whiteThresh");
+    if (whiteThreshEl) whiteThreshEl.oninput = (e) => { State.config.stickers.whiteThresh = Number(e.target.value); saveConfig(); render(); };
 
 
 
@@ -823,6 +864,12 @@
       updateScoreboard();
       render();
     };
+
+    const btnSampleBlack = $("#btnSampleBlack");
+    if (btnSampleBlack) btnSampleBlack.onclick = () => { State.mode = "calibrate_pucks"; State.drag = { type:"sample", team:"black" }; render(); };
+
+    const btnSampleWhite = $("#btnSampleWhite");
+    if (btnSampleWhite) btnSampleWhite.onclick = () => { State.mode = "calibrate_pucks"; State.drag = { type:"sample", team:"white" }; render(); };
 
     const btnSampleRed = $("#btnSampleRed");
     if (btnSampleRed) btnSampleRed.onclick = () => { State.mode = "calibrate_pucks"; State.drag = { type:"sample", team:"red" }; render(); };
@@ -1119,7 +1166,8 @@
 
     // If sampling puck colors, capture pixel under click
     if (State.mode === "calibrate_pucks" && State.drag && State.drag.type === "sample") {
-      sampleColorAt(pos, State.drag.team);
+      if (State.drag.team === "black" || State.drag.team === "white") sampleStickerAt(pos, State.drag.team);
+      else sampleColorAt(pos, State.drag.team);
       State.drag = null;
       render();
       return;
@@ -1153,6 +1201,24 @@
   });
 
   // ---------- Color sampling ----------
+  function sampleStickerAt(pos, which) {
+    const W = overlay.width, H = overlay.height;
+    wctx.drawImage(video, 0, 0, W, H);
+    const x = Math.round(clamp(pos.x, 0, W-1));
+    const y = Math.round(clamp(pos.y, 0, H-1));
+    const px = wctx.getImageData(x, y, 1, 1).data;
+    const gray = (0.2126*px[0] + 0.7152*px[1] + 0.0722*px[2]);
+
+    if (which === "black") {
+      State.config.stickers.blackThresh = Math.min(140, Math.max(5, Math.round(gray + 20)));
+      hintText.textContent = `Sampled BLACK sticker at gray=${Math.round(gray)} → black≤${State.config.stickers.blackThresh}`;
+    } else {
+      State.config.stickers.whiteThresh = Math.min(250, Math.max(120, Math.round(gray - 20)));
+      hintText.textContent = `Sampled WHITE sticker at gray=${Math.round(gray)} → white≥${State.config.stickers.whiteThresh}`;
+    }
+    saveConfig();
+  }
+
   function sampleColorAt(pos, team) {
     const W = overlay.width, H = overlay.height;
     // draw current frame to work
