@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Garage Shuffleboard Scorer (MVP)</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Garage Shuffleboard Scorer</div>
+    <div class="status" id="statusPill">Loading…</div>
+    <div class="spacer"></div>
+    <button class="btn ghost" id="btnResetAll" title="Clears calibration + game">Reset</button>
+  </header>
+
+  <main class="app">
+    <section class="left">
+      <div class="videoWrap">
+        <video id="video" playsinline autoplay muted></video>
+        <canvas id="overlay"></canvas>
+        <canvas id="work" class="hidden"></canvas>
+      </div>
+
+      <div class="panel" id="panelControls">
+        <!-- Filled by JS -->
+      </div>
+    </section>
+
+    <section class="right">
+      <div class="scoreHeader">
+        <div>
+          <div class="hLabel">Game</div>
+          <div class="hValue" id="gameSummary">Not started</div>
+        </div>
+        <div class="totals">
+          <div class="teamCard blue">
+            <div class="teamName">Blue</div>
+            <div class="teamScore" id="blueTotal">0</div>
+          </div>
+          <div class="teamCard red">
+            <div class="teamName">Red</div>
+            <div class="teamScore" id="redTotal">0</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rounds">
+        <div class="roundsTitle">Rounds</div>
+        <div class="roundGridWrap">
+          <table class="roundGrid" id="roundGrid">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th class="blue">Blue</th>
+                <th class="red">Red</th>
+              </tr>
+            </thead>
+            <tbody id="roundGridBody">
+            </tbody>
+          </table>
+        </div>
+        <div class="hint" id="hintText">
+          Calibrate first (left panel). Then start a game and click “Score Round”.
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
