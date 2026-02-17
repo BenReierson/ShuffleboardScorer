@@ -30,6 +30,8 @@
     config: null,
     game: null,
     detectCache: { ts: 0, pucks: [] },
+    testImage: null,
+    loopRunning: false,
   };
 
   function loadHistory() {
@@ -39,8 +41,18 @@
   function saveToHistory(game) {
     const hist = loadHistory();
     hist.unshift(game);          // newest first
-    if (hist.length > 20) hist.pop();
-    localStorage.setItem(LS_HISTORY_KEY, JSON.stringify(hist));
+    while (hist.length > 10) hist.pop();
+    try {
+      localStorage.setItem(LS_HISTORY_KEY, JSON.stringify(hist));
+    } catch (e) {
+      // Quota exceeded — clear history and try once more with just this game
+      console.warn("Storage quota exceeded, clearing history", e);
+      try {
+        localStorage.setItem(LS_HISTORY_KEY, JSON.stringify([game]));
+      } catch {
+        localStorage.removeItem(LS_HISTORY_KEY);
+      }
+    }
   }
   
   // Simpler default config
@@ -104,7 +116,15 @@
   }
   
   function saveConfig() {
-    localStorage.setItem(LS_KEY, JSON.stringify(State.config));
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(State.config));
+    } catch (e) {
+      // Quota exceeded — clear history to free space, then retry
+      console.warn("Storage quota exceeded on config save, clearing history", e);
+      localStorage.removeItem(LS_HISTORY_KEY);
+      try { localStorage.setItem(LS_KEY, JSON.stringify(State.config)); }
+      catch { /* give up silently */ }
+    }
   }
   
   function setStatus(text, kind="") {
@@ -130,6 +150,7 @@
       await video.play();
       setStatus("Camera OK", "ok");
       resizeCanvases();
+      State.loopRunning = true;
       requestAnimationFrame(loop);
     } catch (err) {
       console.error(err);
@@ -159,9 +180,13 @@
   // corresponds to the same visual position in the overlay.
   //
   // Returns dimensions in CANVAS PHYSICAL PIXELS (not CSS pixels).
+
+  function getSource() { return State.testImage || video; }
+
   function getVideoRect() {
-    const vW = video.videoWidth  || overlay.width  / devicePixelRatio;
-    const vH = video.videoHeight || overlay.height / devicePixelRatio;
+    const src = State.testImage;
+    const vW = src ? src.naturalWidth  : (video.videoWidth  || overlay.width  / devicePixelRatio);
+    const vH = src ? src.naturalHeight : (video.videoHeight || overlay.height / devicePixelRatio);
     const cW = overlay.width;   // physical pixels
     const cH = overlay.height;
 
@@ -295,7 +320,37 @@
     const v = max;
     return {h,s,v};
   }
-  
+
+  function hsvToRgb(h,s,v){
+    const c = v * s;
+    const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+    const m = v - c;
+    let r,g,b;
+    if      (h < 60)  { r=c; g=x; b=0; }
+    else if (h < 120) { r=x; g=c; b=0; }
+    else if (h < 180) { r=0; g=c; b=x; }
+    else if (h < 240) { r=0; g=x; b=c; }
+    else if (h < 300) { r=x; g=0; b=c; }
+    else               { r=c; g=0; b=x; }
+    return [Math.round((r+m)*255), Math.round((g+m)*255), Math.round((b+m)*255)];
+  }
+
+  function hsvToHex(h,s,v){
+    return '#' + hsvToRgb(h,s,v).map(c => c.toString(16).padStart(2,'0')).join('');
+  }
+
+  function hexToHsv(hex){
+    const r = parseInt(hex.slice(1,3),16);
+    const g = parseInt(hex.slice(3,5),16);
+    const b = parseInt(hex.slice(5,7),16);
+    return rgbToHsv(r,g,b);
+  }
+
+  // Representative display color for a puck team config
+  function puckSwatchHex(teamCfg){
+    return hsvToHex(teamCfg.hueCenter, Math.min(1, teamCfg.satMin / 0.7), Math.min(1, teamCfg.valMin / 0.7));
+  }
+
   function hueDist(a,b){
     const d = Math.abs(a-b) % 360;
     return Math.min(d, 360-d);
@@ -312,7 +367,7 @@
     // zero at the center but grows toward the edges.
     const vr = getVideoRect();
     wctx.clearRect(0, 0, W, H);
-    wctx.drawImage(video, vr.x, vr.y, vr.w, vr.h);
+    wctx.drawImage(getSource(), vr.x, vr.y, vr.w, vr.h);
     const imageData = wctx.getImageData(0, 0, W, H);
     const data = imageData.data;
     
@@ -608,6 +663,11 @@
         <div class="row">
           <button class="btn primary grow" id="btnNext">Next: Lines</button>
         </div>
+        <div class="sep"></div>
+        <div class="row">
+          <button class="btn ghost grow" id="btnSaveCal">Save Calibration</button>
+          <button class="btn ghost grow" id="btnLoadCal">Load Calibration</button>
+        </div>
       `;
     }
     
@@ -620,17 +680,22 @@
           <button class="btn grow" id="btnBack">Back</button>
           <button class="btn primary grow" id="btnNext">Next: Colors</button>
         </div>
+        <div class="sep"></div>
+        <div class="row">
+          <button class="btn ghost grow" id="btnSaveCal">Save Calibration</button>
+          <button class="btn ghost grow" id="btnLoadCal">Load Calibration</button>
+        </div>
       `;
     }
     
     if (mode === "calibrate_colors") {
       const k = cfg.distortion ? cfg.distortion.k : 0;
+      const redHex = puckSwatchHex(cfg.red);
+      const blueHex = puckSwatchHex(cfg.blue);
       return `
         <h3>Step 3/3: Puck Colors</h3>
         <div class="hint">
-          Click <b>Sample Red</b>, then click on the RED puck's colored plastic ring.<br/>
-          Then click <b>Sample Blue</b> and click on the BLUE puck's colored plastic ring.<br/>
-          Avoid the metal center!
+          Click <b>Sample</b> then click on the puck, or click the <b>color swatch</b> to pick manually.
         </div>
         <div class="row">
           <label>Puck radius</label>
@@ -639,22 +704,21 @@
         </div>
         <div class="sep"></div>
         <div class="row">
+          <input type="color" id="redColorPicker" value="${redHex}" title="Pick red color" style="width:36px;height:36px;padding:0;border:2px solid #5a2a2a;border-radius:6px;cursor:pointer;background:none;" />
           <button class="btn grow" id="btnSampleRed">Sample Red Puck</button>
         </div>
         <div class="row">
+          <input type="color" id="blueColorPicker" value="${blueHex}" title="Pick blue color" style="width:36px;height:36px;padding:0;border:2px solid #234562;border-radius:6px;cursor:pointer;background:none;" />
           <button class="btn grow" id="btnSampleBlue">Sample Blue Puck</button>
         </div>
         <div class="sep"></div>
         <div class="hint"><b>Lens distortion correction</b><br/>
-          Pucks near the edges appear smaller <em>and</em> shifted outward by the camera.<br/>
-          <b>Edge shrink</b> shrinks the collision radius toward the edges.<br/>
-          <b>Position pull-in</b> nudges detected centres back toward the frame centre.<br/>
-          Drag the <b>centre crosshair</b> on the video to shift the distortion origin.<br/>
-          The drawn circle shows exactly where the collision check thinks the puck is.
+          <b>Edge shrink</b> shrinks the collision radius toward edges.
+          <b>Position pull-in</b> nudges centres back toward the frame centre.
         </div>
         <div class="row">
           <label>Edge shrink (k)</label>
-          <div class="grow"><input id="distortionK" type="range" min="0" max="0.1" step="0.001" value="${k.toFixed(3)}" /></div>
+          <div class="grow"><input id="distortionK" type="range" min="0" max="0.2" step="0.001" value="${k.toFixed(3)}" /></div>
           <div class="badge" id="distortionKBadge">${(k * 100).toFixed(1)}%</div>
         </div>
         <div class="row">
@@ -685,6 +749,11 @@
           <div class="badge">${cfg.red.valMin.toFixed(2)}</div>
         </div>
         ${common}
+        <div class="sep"></div>
+        <div class="row">
+          <button class="btn ghost grow" id="btnSaveCal">Save Calibration</button>
+          <button class="btn ghost grow" id="btnLoadCal">Load Calibration</button>
+        </div>
         <div class="row">
           <button class="btn grow" id="btnBack">Back</button>
           <button class="btn primary grow" id="btnFinish">Finish</button>
@@ -693,29 +762,16 @@
     }
     
     if (mode === "ready") {
-      const k = cfg.distortion ? cfg.distortion.k : 0;
       return `
         <h3>Ready!</h3>
         <div class="hint">Calibration complete. Start a game to begin automatic scoring.</div>
         <div class="row">
-          <button class="btn primary grow" id="btnStartGame">Start Game</button>
+          <button class="btn scoreRound grow" id="btnStartGame">Start Game</button>
         </div>
         <div class="row">
           <button class="btn grow" id="btnRecalibrate">Recalibrate</button>
           <button class="btn ghost grow" id="btnHistory">Game History</button>
         </div>
-        <div class="sep"></div>
-        <div class="row">
-          <label>Edge shrink (k)</label>
-          <div class="grow"><input id="distortionK" type="range" min="0" max="0.1" step="0.001" value="${k.toFixed(3)}" /></div>
-          <div class="badge" id="distortionKBadge">${(k * 100).toFixed(1)}%</div>
-        </div>
-        <div class="row">
-          <label>Position pull-in (p)</label>
-          <div class="grow"><input id="distortionP" type="range" min="0" max="0.1" step="0.001" value="${(cfg.distortion?.p ?? 0).toFixed(3)}" /></div>
-          <div class="badge" id="distortionPBadge">${((cfg.distortion?.p ?? 0) * 100).toFixed(1)}%</div>
-        </div>
-        ${common}
       `;
     }
     
@@ -732,14 +788,14 @@
         </div>
         ${ptActive ? `
         <div class="row">
-          <label>Point goal</label>
+          <label style="font-size:18px;font-weight:700;width:auto">Point goal</label>
           <div class="grow"><input id="goalPoints" type="range" min="5" max="150" step="5" value="${goalPoints}" /></div>
-          <div class="badge" id="goalPointsBadge">${goalPoints} pts</div>
+          <div class="badge" id="goalPointsBadge" style="font-size:18px;font-weight:700;padding:6px 12px">${goalPoints} pts</div>
         </div>` : `
         <div class="row">
-          <label>Round goal</label>
+          <label style="font-size:18px;font-weight:700;width:auto">Round goal</label>
           <div class="grow"><input id="goalRounds" type="range" min="1" max="10" step="1" value="${goalRounds}" /></div>
-          <div class="badge" id="goalRoundsBadge">${goalRounds} rnds</div>
+          <div class="badge" id="goalRoundsBadge" style="font-size:18px;font-weight:700;padding:6px 12px">${goalRounds} rnds</div>
         </div>`}
         <div class="row">
           <button class="btn grow" id="btnCancelGame">Cancel</button>
@@ -753,7 +809,7 @@
         <h3>Game Controls</h3>
         <div class="hint">When all pucks have stopped, click <b>Score Round</b>.<br/>Press <b>Space</b> on a keyboard as a shortcut.</div>
         <div class="row">
-          <button class="btn primary grow" id="btnScoreRound">Score Round</button>
+          <button class="btn scoreRound grow" id="btnScoreRound">Score Round</button>
         </div>
         <div class="row">
           <button class="btn grow" id="btnUndoRound">Undo Last</button>
@@ -909,7 +965,7 @@
     const btnEnd = $("#btnEndGame");
     if (btnEnd) btnEnd.onclick = () => {
       if (!State.game) return;
-      if (!confirm("End game early? This will save it to history.")) return;
+      if (!isGoalMet(State.game) && !confirm("End game early? This will save it to history.")) return;
       if (!State.game.ended) {
         State.game.ended   = true;
         State.game.endedAt = Date.now();
@@ -922,16 +978,76 @@
     };
     
     const btnSampleRed = $("#btnSampleRed");
-    if (btnSampleRed) btnSampleRed.onclick = () => { 
-      State.drag = { type:"sample", team:"red" }; 
+    if (btnSampleRed) btnSampleRed.onclick = () => {
+      State.drag = { type:"sample", team:"red" };
       hintText.textContent = "Click on the RED puck's colored plastic...";
     };
-    
+
     const btnSampleBlue = $("#btnSampleBlue");
-    if (btnSampleBlue) btnSampleBlue.onclick = () => { 
-      State.drag = { type:"sample", team:"blue" }; 
+    if (btnSampleBlue) btnSampleBlue.onclick = () => {
+      State.drag = { type:"sample", team:"blue" };
       hintText.textContent = "Click on the BLUE puck's colored plastic...";
     };
+
+    // Color pickers
+    const redPicker = $("#redColorPicker");
+    if (redPicker) redPicker.oninput = (e) => {
+      const hsv = hexToHsv(e.target.value);
+      State.config.red.hueCenter = Math.round(hsv.h);
+      State.config.red.satMin = Math.max(0.2, hsv.s * 0.7);
+      State.config.red.valMin = Math.max(0.15, hsv.v * 0.7);
+      saveConfig();
+      hintText.textContent = `Red set: H=${Math.round(hsv.h)}° S=${hsv.s.toFixed(2)} V=${hsv.v.toFixed(2)}`;
+    };
+
+    const bluePicker = $("#blueColorPicker");
+    if (bluePicker) bluePicker.oninput = (e) => {
+      const hsv = hexToHsv(e.target.value);
+      State.config.blue.hueCenter = Math.round(hsv.h);
+      State.config.blue.satMin = Math.max(0.2, hsv.s * 0.7);
+      State.config.blue.valMin = Math.max(0.15, hsv.v * 0.7);
+      saveConfig();
+      hintText.textContent = `Blue set: H=${Math.round(hsv.h)}° S=${hsv.s.toFixed(2)} V=${hsv.v.toFixed(2)}`;
+    };
+
+    // Save / Load calibration
+    const btnSave = $("#btnSaveCal");
+    if (btnSave) btnSave.onclick = () => {
+      const json = JSON.stringify(State.config, null, 2);
+      const blob = new Blob([json], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "shuffleboard-calibration.json";
+      a.click();
+      URL.revokeObjectURL(a.href);
+    };
+
+    const btnLoad = $("#btnLoadCal");
+    if (btnLoad) {
+      const loadInput = document.createElement("input");
+      loadInput.type = "file";
+      loadInput.accept = ".json,application/json";
+      loadInput.style.display = "none";
+      loadInput.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const imported = JSON.parse(ev.target.result);
+            State.config = { ...defaultConfig(), ...imported };
+            saveConfig();
+            render();
+            hintText.textContent = "Calibration loaded from " + file.name;
+          } catch (err) {
+            alert("Invalid calibration file: " + err.message);
+          }
+        };
+        reader.readAsText(file);
+        loadInput.value = "";
+      };
+      btnLoad.onclick = () => loadInput.click();
+    }
   }
   
   function updateScoreboard() {
@@ -968,19 +1084,28 @@
       roundGridBody.appendChild(tr);
     });
 
-    if (!g.ended) {
-      let over = false;
-      if (g.goalType === "points" && g.goalPoints > 0 && (g.totals.blue >= g.goalPoints || g.totals.red >= g.goalPoints)) over = true;
-      if (g.goalType === "rounds" && g.goalRounds > 0 && g.rounds.length >= g.goalRounds) over = true;
-      if (over) {
-        g.ended = true;
-        g.endedAt = Date.now();
-        saveToHistory(g);
-        showWinnerPopup(g);
-      }
-    }
+    // Goal-reached check is handled by showScoreAnimation dismiss callback
   }
   
+  // Pure number check — does not care whether the game is already marked ended
+  function isGoalMet(g) {
+    if (!g) return false;
+    if (g.goalType === "points" && g.goalPoints > 0 && (g.totals.blue >= g.goalPoints || g.totals.red >= g.goalPoints)) return true;
+    if (g.goalType === "rounds" && g.goalRounds > 0 && g.rounds.length >= g.goalRounds) return true;
+    return false;
+  }
+
+  function endGameIfGoalReached() {
+    const g = State.game;
+    if (!g || g.ended) return;
+    if (isGoalMet(g)) {
+      g.ended = true;
+      g.endedAt = Date.now();
+      saveToHistory(g);
+      showWinnerPopup(g);
+    }
+  }
+
   function captureScreenshot() {
     try {
       const c = document.createElement("canvas");
@@ -988,7 +1113,7 @@
       c.height = overlay.height;
       const x  = c.getContext("2d");
       const vr = getVideoRect();
-      x.drawImage(video, vr.x, vr.y, vr.w, vr.h);
+      x.drawImage(getSource(), vr.x, vr.y, vr.w, vr.h);
       x.drawImage(overlay, 0, 0);
       return c.toDataURL("image/jpeg", 0.75);
     } catch { return null; }
@@ -1019,6 +1144,30 @@
   window.addEventListener("keydown", (e) => {
     if (e.code === "Space") {
       e.preventDefault();
+      // If score animation popup is open, dismiss it directly
+      const scoreAnimPopup = document.querySelector("[data-popup-type='scoreAnim']");
+      if (scoreAnimPopup) {
+        if (scoreAnimPopup._dismiss) scoreAnimPopup._dismiss();
+        else scoreAnimPopup.remove();
+        return;
+      }
+      // If winner popup is open, click the New Game button
+      const winnerPopup = document.querySelector("[data-popup-type='winner']");
+      if (winnerPopup) {
+        const newGameBtn = winnerPopup.querySelector("#btnNewGameFromWinner");
+        if (newGameBtn) newGameBtn.click();
+        return;
+      }
+      // Ready state → Start Game
+      if (State.mode === "ready") {
+        const btn = $("#btnStartGame");
+        if (btn) { btn.click(); return; }
+      }
+      // Game setup → Begin
+      if (State.mode === "game_setup") {
+        const btn = $("#btnBeginGame");
+        if (btn) { btn.click(); return; }
+      }
       if (State.mode === "game") doScoreRound();
     }
   });
@@ -1038,6 +1187,45 @@
     render();
   };
   
+  // ========== TEST IMAGE ==========
+  const testImageInput = $("#testImageInput");
+  const btnTest = $("#btnTest");
+
+  btnTest.onclick = () => {
+    if (State.testImage) {
+      // Switch back to camera
+      State.testImage = null;
+      video.style.display = "";
+      btnTest.textContent = "Test";
+      State.detectCache = { ts: 0, pucks: [] };
+      if (video.srcObject) setStatus("Camera OK", "ok");
+      else setStatus("Camera blocked", "bad");
+    } else {
+      testImageInput.click();
+    }
+  };
+
+  testImageInput.onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const img = new Image();
+    img.onload = () => {
+      State.testImage = img;
+      State.detectCache = { ts: 0, pucks: [] };
+      video.style.display = "none";
+      btnTest.textContent = "Camera";
+      setStatus("Test Image", "warn");
+      // Ensure the render loop is running (camera may have failed)
+      if (!State.loopRunning) {
+        State.loopRunning = true;
+        resizeCanvases();
+        requestAnimationFrame(loop);
+      }
+    };
+    img.src = URL.createObjectURL(file);
+    testImageInput.value = ""; // allow re-selecting the same file
+  };
+
   // ========== POPUPS ==========
 
   function makeModal(content, onClose) {
@@ -1074,16 +1262,29 @@
     }
 
     const img = round.screenshot
-      ? `<img src="${round.screenshot}" style="width:100%;border-radius:12px;display:block;margin-bottom:18px;max-height:240px;object-fit:cover;" />`
+      ? `<img src="${round.screenshot}" style="width:100%;border-radius:12px;display:block;margin-bottom:18px;max-height:380px;object-fit:cover;" />`
       : "";
 
-    const modal = makeModal(`
+    let undone = false;
+    let dismissed = false;
+
+    // Build backdrop manually (not makeModal) so there is exactly ONE
+    // click handler and no competing remove() calls.
+    const modal = document.createElement("div");
+    Object.assign(modal.style, {
+      position:"fixed", inset:"0", background:"rgba(0,0,0,0.3)",
+      zIndex:"1000", display:"flex", alignItems:"center", justifyContent:"flex-end",
+      padding:"16px", paddingRight:"24px", boxSizing:"border-box",
+    });
+    modal.dataset.popupType = "scoreAnim";
+    modal.innerHTML = `
       <div id="scoreAnim" style="
         background:#0b1520; border:1px solid #223140; border-radius:20px;
-        padding:24px 28px; text-align:center; width:min(92vw,480px);
+        padding:28px 32px; text-align:center; width:min(42vw,520px);
         font-family:-apple-system,system-ui,sans-serif; color:#e7eef7;
+        max-height:95vh; overflow-y:auto; position:relative;
       ">
-        <div style="font-size:11px;letter-spacing:1px;color:#9fb0c2;margin-bottom:14px;text-transform:uppercase">Round ${roundNum}</div>
+        <div style="font-size:16px;letter-spacing:1.5px;color:#9fb0c2;margin-bottom:16px;text-transform:uppercase;font-weight:700">Round ${roundNum}</div>
         ${img}
 
         <!-- Round scores -->
@@ -1112,15 +1313,88 @@
               <div id="animRedTotal" style="font-size:64px;font-weight:900;color:#ff5b5b;line-height:1">0</div>
             </div>
           </div>
-          <div id="remainLine" style="padding:8px;font-size:14px;font-weight:700;color:#fbbf24;background:#0e1c2c;letter-spacing:.5px"></div>
+          <div id="remainLine" style="padding:10px;font-size:20px;font-weight:700;color:#fbbf24;background:#0e1c2c;letter-spacing:.5px"></div>
         </div>
 
-        <div style="font-size:11px;color:#4a5a6a;margin-top:12px">Tap anywhere to continue</div>
-      </div>
-    `);
+        <div style="text-align:center;margin-top:12px;margin-bottom:8px">
+          <button id="btnUndoScoreAnim" style="
+            background:#401a1a;border:1px solid #6a2b2b;color:#ffd2d8;
+            padding:10px 28px;border-radius:10px;font-size:14px;cursor:pointer;font-family:inherit;
+          ">Undo Round</button>
+        </div>
 
-    // Dismiss on tap anywhere (backdrop or card)
-    modal.addEventListener("click", () => modal.remove());
+        <div style="font-size:11px;color:#4a5a6a;margin-bottom:8px">Tap anywhere to continue</div>
+        <div style="height:4px;background:#1e3040;border-radius:2px;overflow:hidden">
+          <div id="autoDismissBar" style="height:100%;width:100%;background:#4aa3ff;border-radius:2px;transition:width linear"></div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    // Auto-dismiss timer
+    const AUTO_DISMISS_MS = 10000;
+    let autoDismissTimer = null;
+    const bar = modal.querySelector("#autoDismissBar");
+
+    function startAutoDismiss() {
+      requestAnimationFrame(() => {
+        bar.style.transitionDuration = AUTO_DISMISS_MS + "ms";
+        bar.style.width = "0%";
+      });
+      autoDismissTimer = setTimeout(() => {
+        dismissModal();
+      }, AUTO_DISMISS_MS);
+    }
+
+    function cancelAutoDismiss() {
+      if (autoDismissTimer) { clearTimeout(autoDismissTimer); autoDismissTimer = null; }
+    }
+
+    function dismissModal() {
+      if (dismissed) return;
+      dismissed = true;
+      cancelAutoDismiss();
+      if (modal.parentNode) modal.remove();
+      if (!undone) {
+        const game = State.game;
+        if (game && !game.ended && isGoalMet(game)) {
+          game.ended = true;
+          game.endedAt = Date.now();
+          saveToHistory(game);
+          showWinnerPopup(game);
+        }
+      }
+    }
+
+    // Expose dismiss so spacebar handler can call it directly
+    modal._dismiss = dismissModal;
+
+    // Start auto-dismiss immediately
+    startAutoDismiss();
+
+    // Single click handler — dismiss on any click except the undo button
+    modal.addEventListener("click", (e) => {
+      if (e.target.id === "btnUndoScoreAnim") return;
+      dismissModal();
+    });
+
+    // Undo button
+    modal.querySelector("#btnUndoScoreAnim")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      undone = true;
+      dismissed = true; // prevent dismissModal from also running
+      cancelAutoDismiss();
+      const game = State.game;
+      if (game && roundNum - 1 < game.rounds.length) {
+        const removed = game.rounds.splice(roundNum - 1);
+        for (const r of removed) {
+          game.totals.blue -= r.blue;
+          game.totals.red  -= r.red;
+        }
+        updateScoreboard();
+      }
+      modal.remove();
+    });
 
     const animBlueEl      = modal.querySelector("#animBlue");
     const animRedEl       = modal.querySelector("#animRed");
@@ -1175,7 +1449,9 @@
     const img = round.screenshot
       ? `<img src="${round.screenshot}" style="width:100%;border-radius:10px;display:block;margin-bottom:14px;" />`
       : `<div style="color:#9fb0c2;margin-bottom:14px;text-align:center">No screenshot</div>`;
-    makeModal(`
+    const roundIdx = roundNum - 1;
+    const canUndo = State.game && !State.game.ended && roundIdx < State.game.rounds.length;
+    const modal = makeModal(`
       <div style="
         background:#121a22;border:1px solid #223140;border-radius:18px;
         padding:24px;max-width:640px;width:100%;font-family:-apple-system,system-ui,sans-serif;color:#e7eef7;
@@ -1192,9 +1468,31 @@
             <div style="font-size:36px;font-weight:800;color:#ff5b5b">${round.red}</div>
           </div>
         </div>
+        ${canUndo ? `<div style="text-align:center;margin-bottom:12px">
+          <button id="btnUndoRoundPopup" style="
+            background:#401a1a;border:1px solid #6a2b2b;color:#ffd2d8;
+            padding:10px 28px;border-radius:10px;font-size:14px;cursor:pointer;font-family:inherit;
+          ">Undo Round</button>
+        </div>` : ""}
         <div style="font-size:11px;color:#4a5a6a;text-align:center">Tap outside to close</div>
       </div>
     `);
+
+    if (canUndo) {
+      modal.querySelector("#btnUndoRoundPopup")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const g = State.game;
+        if (!g || roundIdx >= g.rounds.length) return;
+        // Remove this round and all rounds after it, adjusting totals
+        const removed = g.rounds.splice(roundIdx);
+        for (const r of removed) {
+          g.totals.blue -= r.blue;
+          g.totals.red  -= r.red;
+        }
+        updateScoreboard();
+        modal.remove();
+      });
+    }
   }
 
   function showWinnerPopup(game) {
@@ -1220,7 +1518,7 @@
       </tr>`;
     }).join("");
 
-    makeModal(`
+    const winModal = makeModal(`
       <div style="
         background:#0b0f14;border:1px solid #223140;border-radius:20px;
         padding:32px;max-width:520px;width:100%;font-family:-apple-system,system-ui,sans-serif;
@@ -1259,9 +1557,10 @@
         <div style="font-size:11px;color:#4a5a6a;text-align:center;margin-top:12px">Tap outside to close</div>
       </div>
     `);
+    winModal.dataset.popupType = "winner";
 
-    document.getElementById("btnNewGameFromWinner")?.addEventListener("click", () => {
-      document.querySelectorAll("[style*='position:fixed']").forEach(el => el.remove());
+    winModal.querySelector("#btnNewGameFromWinner")?.addEventListener("click", () => {
+      winModal.remove();
       State.game = null;
       State.mode = "game_setup";
       updateScoreboard();
@@ -1308,9 +1607,22 @@
           </thead>
           <tbody id="histBody">${rows}</tbody>
         </table>
-        <div style="font-size:11px;color:#4a5a6a;text-align:center;margin-top:16px">Tap outside to close · Tap a row for details</div>
+        <div style="text-align:center;margin-top:16px">
+          <button id="btnClearHistory" style="
+            background:#401a1a;border:1px solid #6a2b2b;color:#ffd2d8;
+            padding:8px 20px;border-radius:10px;font-size:13px;cursor:pointer;font-family:inherit;
+          ">Clear History</button>
+        </div>
+        <div style="font-size:11px;color:#4a5a6a;text-align:center;margin-top:10px">Tap outside to close · Tap a row for details</div>
       </div>
     `);
+
+    modal.querySelector("#btnClearHistory")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!confirm("Clear all game history?")) return;
+      localStorage.removeItem(LS_HISTORY_KEY);
+      modal.remove();
+    });
 
     modal.querySelectorAll(".hist-row").forEach(row => {
       row.addEventListener("click", (e) => {
@@ -1349,6 +1661,12 @@
   function drawOverlay() {
     const W = overlay.width, H = overlay.height;
     ctx.clearRect(0,0,W,H);
+
+    // When using a test image, draw it as the background since the video element is hidden
+    if (State.testImage) {
+      const vr = getVideoRect();
+      ctx.drawImage(State.testImage, vr.x, vr.y, vr.w, vr.h);
+    }
 
     // Letterbox bars: fill areas outside the video content with opaque black
     // so the user can't accidentally place calibration handles there.
@@ -1645,8 +1963,8 @@
     // Use the same letterbox draw as detection so sampled pixel coords match
     const vr = getVideoRect();
     wctx.clearRect(0, 0, W, H);
-    wctx.drawImage(video, vr.x, vr.y, vr.w, vr.h);
-    
+    wctx.drawImage(getSource(), vr.x, vr.y, vr.w, vr.h);
+
     // Sample 5x5 area to get better average
     let hSum = 0, sSum = 0, vSum = 0, count = 0;
     
@@ -1681,9 +1999,15 @@
   function render() {
     panel.innerHTML = renderPanel();
     wirePanelEvents();
-    
+
+    const calibrating = State.mode.startsWith("calibrate");
+    const scoreHeader = $(".scoreHeader");
+    const roundsSection = $(".rounds");
+    if (scoreHeader) scoreHeader.style.display = calibrating ? "none" : "";
+    if (roundsSection) roundsSection.style.display = calibrating ? "none" : "";
+
     if (State.mode === "init") setStatus("Starting...", "warn");
-    else if (State.mode.startsWith("calibrate")) setStatus("Calibrating", "warn");
+    else if (calibrating) setStatus("Calibrating", "warn");
     else if (State.mode === "ready") setStatus("Ready", "ok");
     else if (State.mode === "game" || State.mode === "game_setup") setStatus("Game", "ok");
   }

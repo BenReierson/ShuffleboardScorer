@@ -87,6 +87,7 @@ button,input,select{ font:inherit; }
 .btn.primary{ background:#1d3552; border-color:#2b4b74; }
 .btn.danger{ background:#401a1a; border-color:#6a2b2b; }
 .btn.ghost{ background:transparent; }
+.btn.scoreRound{ background:#1a4a2a; border-color:#36d399; color:#baf7dd; padding:28px 10px; font-size:18px; font-weight:700; }
 
 
 video,canvas{
@@ -158,7 +159,7 @@ video {
 .teamCard.blue{ border-color:#234562; }
 .teamCard.red{ border-color:#5a2a2a; }
 .teamName{ font-size:12px; color:var(--muted); }
-.teamScore{ font-size:28px; font-weight:800; }
+.teamScore{ font-size:48px; font-weight:800; }
 .teamCard.blue .teamScore{ color:var(--blue); }
 .teamCard.red .teamScore{ color:var(--red); }
 
@@ -176,9 +177,9 @@ video {
 .roundGridWrap{ overflow:auto; border:1px solid var(--border); border-radius:12px; }
 .roundGrid{ width:100%; border-collapse:collapse; }
 .roundGrid th, .roundGrid td{
-  padding:10px 10px;
+  padding:12px 10px;
   border-bottom:1px solid var(--border);
-  font-size:13px;
+  font-size:26px;
 }
 .roundGrid th{ position:sticky; top:0; background:#0f1620; z-index:1; text-align:left; }
 .roundGrid th.blue{ color:var(--blue); }
