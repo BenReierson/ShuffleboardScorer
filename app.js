@@ -24,6 +24,67 @@
   const LS_KEY = "shuffleboard_v2";
   const LS_HISTORY_KEY = "shuffleboard_v2_history";
 
+  // ========== SOUND EFFECTS (Web Audio API) ==========
+  let audioCtx = null;
+  function getAudioCtx() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    return audioCtx;
+  }
+
+  // Short pitched tick — freq escalates as progress goes from 0→1
+  function playTick(progress) {
+    try {
+      const ctx = getAudioCtx();
+      const freq = 300 + progress * 900; // 300 Hz → 1200 Hz
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.08);
+    } catch {}
+  }
+
+  // Celebratory fanfare for win popup
+  function playWinFanfare() {
+    try {
+      const ctx = getAudioCtx();
+      const notes = [523, 659, 784, 1047]; // C5, E5, G5, C6
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "triangle";
+        osc.frequency.value = freq;
+        const t = ctx.currentTime + i * 0.12;
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(0.18, t + 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.5);
+      });
+      // Final shimmer chord
+      const shimmerTime = ctx.currentTime + notes.length * 0.12;
+      [1047, 1319, 1568].forEach(freq => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.1, shimmerTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, shimmerTime + 1.2);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(shimmerTime);
+        osc.stop(shimmerTime + 1.2);
+      });
+    } catch {}
+  }
+
   const State = {
     mode: "init",
     drag: null,
@@ -1437,12 +1498,21 @@
     // Phase 1: count up round scores (0 → round.blue / round.red)
     const phase1Dur = 800;
     const phase1Start = performance.now();
+    let lastTick1 = -1;
 
     function phase1(now) {
       const t    = Math.min(1, (now - phase1Start) / phase1Dur);
       const ease = 1 - Math.pow(1 - t, 3);
-      animBlueEl.textContent = Math.round(ease * round.blue);
-      animRedEl.textContent  = Math.round(ease * round.red);
+      const curBlue = Math.round(ease * round.blue);
+      const curRed  = Math.round(ease * round.red);
+      animBlueEl.textContent = curBlue;
+      animRedEl.textContent  = curRed;
+      // Tick sound on each integer change
+      const curMax = Math.max(curBlue, curRed);
+      if (curMax > lastTick1 && curMax > 0) {
+        lastTick1 = curMax;
+        playTick(t);
+      }
       if (t < 1) { requestAnimationFrame(phase1); return; }
 
       // Settle
@@ -1458,12 +1528,21 @@
 
         const phase2Dur   = 900;
         const phase2Start = performance.now();
+        let lastTick2 = -1;
 
         function phase2(now2) {
           const t2   = Math.min(1, (now2 - phase2Start) / phase2Dur);
           const ease2 = 1 - Math.pow(1 - t2, 4); // snappier ease
-          animBlueTotalEl.textContent = Math.round(ease2 * blueTotal);
-          animRedTotalEl.textContent  = Math.round(ease2 * redTotal);
+          const curBT = Math.round(ease2 * blueTotal);
+          const curRT = Math.round(ease2 * redTotal);
+          animBlueTotalEl.textContent = curBT;
+          animRedTotalEl.textContent  = curRT;
+          // Tick sound on each integer change
+          const curMax2 = Math.max(curBT, curRT);
+          if (curMax2 > lastTick2 && curMax2 > 0) {
+            lastTick2 = curMax2;
+            playTick(t2);
+          }
           if (t2 < 1) { requestAnimationFrame(phase2); }
           else {
             animBlueTotalEl.textContent = blueTotal;
@@ -1532,9 +1611,30 @@
                  : "tie";
     const winColor  = winner === "blue" ? "#4aa3ff" : winner === "red" ? "#ff5b5b" : "#fbbf24";
     const winLabel  = winner === "tie"  ? "It's a Tie! 🤝" : (winner.toUpperCase() + " WINS! 🎉");
-    const confetti  = ["🎊","🎉","🏆","⭐","✨","🥳"].map(e =>
-      `<span style="position:absolute;font-size:28px;animation:floatUp ${1.5+Math.random()}s ease-out forwards;
-       left:${Math.random()*90}%;top:100%">${e}</span>`).join("");
+
+    // Full-screen confetti in the winning team's color
+    const confettiColors = winner === "blue" ? ["#4aa3ff","#2b7de9","#80c4ff","#1d5fb8"]
+                         : winner === "red"  ? ["#ff5b5b","#e93b3b","#ff9090","#c42020"]
+                         : ["#fbbf24","#f59e0b","#fde68a","#d97706"];
+    let confettiHtml = "";
+    for (let i = 0; i < 60; i++) {
+      const c = confettiColors[i % confettiColors.length];
+      const left = Math.random() * 100;
+      const delay = Math.random() * 1.5;
+      const dur = 2 + Math.random() * 2;
+      const size = 6 + Math.random() * 8;
+      const drift = -30 + Math.random() * 60;
+      const rot = Math.random() * 720;
+      confettiHtml += `<div style="
+        position:absolute;left:${left}%;top:-20px;width:${size}px;height:${size * 0.6}px;
+        background:${c};border-radius:1px;opacity:0.9;
+        animation:confettiFall ${dur}s ${delay}s ease-in forwards;
+        --drift:${drift}px;--rot:${rot}deg;
+      "></div>`;
+    }
+
+    // Play celebratory sound
+    playWinFanfare();
 
     const rows = game.rounds.map((r,i) => {
       const thumb = r.screenshot
@@ -1555,8 +1655,13 @@
         padding:32px;max-width:520px;width:100%;font-family:-apple-system,system-ui,sans-serif;
         color:#e7eef7;position:relative;overflow:hidden;max-height:90vh;overflow-y:auto;
       ">
-        <style>@keyframes floatUp{to{transform:translateY(-120vh) rotate(360deg);opacity:0}}</style>
-        <div style="position:absolute;inset:0;pointer-events:none;overflow:hidden">${confetti}</div>
+        <style>
+          @keyframes confettiFall {
+            0% { transform: translateY(0) translateX(0) rotate(0deg); opacity: 1; }
+            100% { transform: translateY(100vh) translateX(var(--drift)) rotate(var(--rot)); opacity: 0; }
+          }
+        </style>
+        <div style="position:absolute;inset:0;pointer-events:none;overflow:hidden">${confettiHtml}</div>
         <div style="font-size:32px;font-weight:900;color:${winColor};text-align:center;margin-bottom:4px">${winLabel}</div>
         <div style="text-align:center;margin-bottom:24px">
           <span style="font-size:48px;font-weight:800;color:#4aa3ff">${game.totals.blue}</span>
@@ -1590,12 +1695,30 @@
     `);
     winModal.dataset.popupType = "winner";
 
+    // Full-screen confetti overlay (behind modal content, in front of app)
+    const confettiOverlay = document.createElement("div");
+    Object.assign(confettiOverlay.style, {
+      position:"fixed", inset:"0", zIndex:"999", pointerEvents:"none", overflow:"hidden",
+    });
+    // Add the keyframe style for the overlay too
+    const styleEl = document.createElement("style");
+    styleEl.textContent = `@keyframes confettiFall{0%{transform:translateY(0) translateX(0) rotate(0deg);opacity:1}100%{transform:translateY(100vh) translateX(var(--drift)) rotate(var(--rot));opacity:0}}`;
+    confettiOverlay.appendChild(styleEl);
+    confettiOverlay.innerHTML += confettiHtml;
+    document.body.appendChild(confettiOverlay);
+
     winModal.querySelector("#btnNewGameFromWinner")?.addEventListener("click", () => {
       winModal.remove();
+      confettiOverlay.remove();
       State.game = null;
       State.mode = "game_setup";
       updateScoreboard();
       render();
+    });
+
+    // Also remove confetti when modal is dismissed by clicking outside
+    winModal.addEventListener("click", (e) => {
+      if (e.target === winModal) confettiOverlay.remove();
     });
   }
 
