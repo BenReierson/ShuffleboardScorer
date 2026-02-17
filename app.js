@@ -2,7 +2,7 @@
 // Direct detection of red/blue puck plastic (no stickers needed!)
 
 (() => {
-  const BUILD = "v2d";
+  const BUILD = "v2E";
   
   const $ = (sel) => document.querySelector(sel);
   const video = $("#video");
@@ -34,9 +34,9 @@
   // Simpler default config
   function defaultConfig() {
     return {
-      puckRadius: 25,
-      lineThickness: 2,
-      touchEpsilon: 2,
+      puckRadius: 14,
+      lineThickness: 2.5,
+      touchEpsilon: 0,
       
       tri: {
         A: { x: 120, y: 120 },
@@ -50,19 +50,18 @@
         { p1: { x: 230, y: 210 }, p2: { x: 230, y: 450 } },
       ],
       
-      // Much simpler color config - just HSV ranges
       red: {
-        hueCenter: 0,      // Red is at 0/360 degrees
-        hueRange: 20,      // Accept ±20 degrees
-        satMin: 0.3,       // Minimum saturation
-        valMin: 0.2,       // Minimum brightness
+        hueCenter: 0,
+        hueRange: 20,
+        satMin: 0.40,
+        valMin: 0.25,
       },
       
       blue: {
-        hueCenter: 210,    // Blue is around 210 degrees
-        hueRange: 30,      // Accept ±30 degrees
-        satMin: 0.3,
-        valMin: 0.2,
+        hueCenter: 210,
+        hueRange: 30,
+        satMin: 0.40,
+        valMin: 0.25,
       },
       
       detection: {
@@ -71,22 +70,13 @@
         minCircularity: 0.4,
       },
 
-      // Radial lens-distortion correction for collision detection.
-      // The camera compresses features near the edges, so pucks there appear
-      // smaller than puckRadius pixels.  We shrink the effective collision
-      // radius by (1 - k * r²) where r ∈ [0,1] is the normalised distance
-      // from the frame centre to the frame corner.
-      // k = 0  → no correction (circle stays constant everywhere)
-      // k = 0.4 → radius at the corner is 60% of the centre radius
-      //
-      // p = position pull-in coefficient.
-      // Barrel distortion bows puck positions outward from centre.
-      // corrected = centre + (raw - centre) * (1 - p * r²)
-      // p = 0   → no position correction
-      // p = 0.3 → a puck at the corner is pulled 30% back toward centre
       distortion: {
-        k: 0.0,   // radial radius-shrink coefficient
-        p: 0.0,   // radial position pull-in coefficient
+        k: 0.02,    // radial radius-shrink coefficient
+        p: 0.02,    // radial position pull-in coefficient
+        // cx/cy: distortion centre in CSS-pixel space.
+        // null = use frame centre. Drag the handle in calibration to adjust.
+        cx: null,
+        cy: null,
       },
     };
   }
@@ -229,14 +219,23 @@
   }
   
   // ========== DISTORTION CORRECTION ==========
-  // Shared helper: returns frame centre and normalised radial distance r ∈ [0,1]
-  // for a point (px, py) in CSS-pixel space.
+  // Shared helper: returns the distortion centre (cx, cy) and normalised
+  // radial distance r ∈ [0,1] for a point (px, py) in CSS-pixel space.
+  // The distortion centre defaults to the frame centre but can be dragged.
   function radialParams(px, py) {
     const cW = overlay.width  / devicePixelRatio;
     const cH = overlay.height / devicePixelRatio;
-    const cx = cW / 2;
-    const cy = cH / 2;
-    const maxDist = Math.hypot(cx, cy);   // centre → corner
+    const d  = State.config.distortion;
+    // Use saved centre if set, otherwise frame centre
+    const cx = (d && d.cx != null) ? d.cx : cW / 2;
+    const cy = (d && d.cy != null) ? d.cy : cH / 2;
+    // Normalise by distance from the chosen centre to the nearest corner
+    const maxDist = Math.max(
+      Math.hypot(cx,      cy),
+      Math.hypot(cW - cx, cy),
+      Math.hypot(cx,      cH - cy),
+      Math.hypot(cW - cx, cH - cy),
+    );
     const dx = px - cx;
     const dy = py - cy;
     const r  = Math.min(1, Math.hypot(dx, dy) / maxDist);
@@ -638,17 +637,18 @@
           Pucks near the edges appear smaller <em>and</em> shifted outward by the camera.<br/>
           <b>Edge shrink</b> shrinks the collision radius toward the edges.<br/>
           <b>Position pull-in</b> nudges detected centres back toward the frame centre.<br/>
+          Drag the <b>centre crosshair</b> on the video to shift the distortion origin.<br/>
           The drawn circle shows exactly where the collision check thinks the puck is.
         </div>
         <div class="row">
           <label>Edge shrink (k)</label>
-          <div class="grow"><input id="distortionK" type="range" min="0" max="0.7" step="0.02" value="${k.toFixed(2)}" /></div>
-          <div class="badge" id="distortionKBadge">${(k * 100).toFixed(0)}%</div>
+          <div class="grow"><input id="distortionK" type="range" min="0" max="0.1" step="0.001" value="${k.toFixed(3)}" /></div>
+          <div class="badge" id="distortionKBadge">${(k * 100).toFixed(1)}%</div>
         </div>
         <div class="row">
           <label>Position pull-in (p)</label>
-          <div class="grow"><input id="distortionP" type="range" min="0" max="0.5" step="0.01" value="${(cfg.distortion?.p ?? 0).toFixed(2)}" /></div>
-          <div class="badge" id="distortionPBadge">${((cfg.distortion?.p ?? 0) * 100).toFixed(0)}%</div>
+          <div class="grow"><input id="distortionP" type="range" min="0" max="0.1" step="0.001" value="${(cfg.distortion?.p ?? 0).toFixed(3)}" /></div>
+          <div class="badge" id="distortionPBadge">${((cfg.distortion?.p ?? 0) * 100).toFixed(1)}%</div>
         </div>
         <div class="sep"></div>
         <div class="hint"><b>Color fine-tuning</b> (if detection isn't working)</div>
@@ -694,13 +694,13 @@
         <div class="sep"></div>
         <div class="row">
           <label>Edge shrink (k)</label>
-          <div class="grow"><input id="distortionK" type="range" min="0" max="0.7" step="0.02" value="${k.toFixed(2)}" /></div>
-          <div class="badge" id="distortionKBadge">${(k * 100).toFixed(0)}%</div>
+          <div class="grow"><input id="distortionK" type="range" min="0" max="0.1" step="0.001" value="${k.toFixed(3)}" /></div>
+          <div class="badge" id="distortionKBadge">${(k * 100).toFixed(1)}%</div>
         </div>
         <div class="row">
           <label>Position pull-in (p)</label>
-          <div class="grow"><input id="distortionP" type="range" min="0" max="0.5" step="0.01" value="${(cfg.distortion?.p ?? 0).toFixed(2)}" /></div>
-          <div class="badge" id="distortionPBadge">${((cfg.distortion?.p ?? 0) * 100).toFixed(0)}%</div>
+          <div class="grow"><input id="distortionP" type="range" min="0" max="0.1" step="0.001" value="${(cfg.distortion?.p ?? 0).toFixed(3)}" /></div>
+          <div class="badge" id="distortionPBadge">${((cfg.distortion?.p ?? 0) * 100).toFixed(1)}%</div>
         </div>
         ${common}
         <div class="sep"></div>
@@ -778,19 +778,19 @@
 
     const dkEl = $("#distortionK");
     if (dkEl) dkEl.oninput = (e) => {
-      if (!State.config.distortion) State.config.distortion = { k: 0, p: 0 };
+      if (!State.config.distortion) State.config.distortion = { k: 0, p: 0, cx: null, cy: null };
       State.config.distortion.k = Number(e.target.value);
       const badge = $("#distortionKBadge");
-      if (badge) badge.textContent = (State.config.distortion.k * 100).toFixed(0) + "%";
+      if (badge) badge.textContent = (State.config.distortion.k * 100).toFixed(1) + "%";
       saveConfig();
     };
 
     const dpEl = $("#distortionP");
     if (dpEl) dpEl.oninput = (e) => {
-      if (!State.config.distortion) State.config.distortion = { k: 0, p: 0 };
+      if (!State.config.distortion) State.config.distortion = { k: 0, p: 0, cx: null, cy: null };
       State.config.distortion.p = Number(e.target.value);
       const badge = $("#distortionPBadge");
-      if (badge) badge.textContent = (State.config.distortion.p * 100).toFixed(0) + "%";
+      if (badge) badge.textContent = (State.config.distortion.p * 100).toFixed(1) + "%";
       saveConfig();
     };
     
@@ -1064,6 +1064,36 @@
       }
       
       if (State.mode === "calibrate_colors") {
+        // Draw draggable distortion centre crosshair
+        const cW2 = overlay.width  / devicePixelRatio;
+        const cH2 = overlay.height / devicePixelRatio;
+        const d2   = State.config.distortion;
+        const dcx  = ((d2 && d2.cx != null) ? d2.cx : cW2 / 2) * devicePixelRatio;
+        const dcy  = ((d2 && d2.cy != null) ? d2.cy : cH2 / 2) * devicePixelRatio;
+        const arm  = 14 * devicePixelRatio;
+        const cr   = 7  * devicePixelRatio;
+        ctx.save();
+        // Crosshair arms
+        ctx.strokeStyle = "rgba(255,255,255,0.9)";
+        ctx.lineWidth   = 2.5 * devicePixelRatio;
+        ctx.beginPath();
+        ctx.moveTo(dcx - arm, dcy); ctx.lineTo(dcx + arm, dcy);
+        ctx.moveTo(dcx, dcy - arm); ctx.lineTo(dcx, dcy + arm);
+        ctx.stroke();
+        // Circle
+        ctx.strokeStyle = "rgba(251,191,36,0.95)";
+        ctx.fillStyle   = "rgba(251,191,36,0.18)";
+        ctx.lineWidth   = 2 * devicePixelRatio;
+        ctx.beginPath();
+        ctx.arc(dcx, dcy, cr, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        // Label
+        ctx.fillStyle = "rgba(251,191,36,0.95)";
+        ctx.font = `${10 * devicePixelRatio}px system-ui`;
+        ctx.fillText("distortion centre", dcx + cr + 4 * devicePixelRatio, dcy + 4 * devicePixelRatio);
+        ctx.restore();
+
         // Show 5 ghost circles: one at centre, one near each corner.
         // Each circle is drawn at the CORRECTED position with the EFFECTIVE radius
         // so the user can see both distortion parameters working together.
@@ -1183,6 +1213,16 @@
         handles.push({ type:"line", idx, end:"p2", p: scale(L.p2) });
       });
     }
+
+    // Distortion centre handle — only visible in calibrate_colors
+    if (State.mode === "calibrate_colors") {
+      const cW = overlay.width  / devicePixelRatio;
+      const cH = overlay.height / devicePixelRatio;
+      const d  = cfg.distortion;
+      const dcx = (d && d.cx != null) ? d.cx : cW / 2;
+      const dcy = (d && d.cy != null) ? d.cy : cH / 2;
+      handles.push({ type:"distCenter", p: scale({ x: dcx, y: dcy }) });
+    }
     
     const R = 12 * devicePixelRatio;
     for (const h of handles) {
@@ -1222,6 +1262,11 @@
       saveConfig();
     } else if (State.drag.type === "line") {
       State.config.lines[State.drag.idx][State.drag.end] = { x: u.x, y: u.y };
+      saveConfig();
+    } else if (State.drag.type === "distCenter") {
+      if (!State.config.distortion) State.config.distortion = { k: 0, p: 0, cx: null, cy: null };
+      State.config.distortion.cx = u.x;
+      State.config.distortion.cy = u.y;
       saveConfig();
     }
   });
