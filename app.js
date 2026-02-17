@@ -2,7 +2,7 @@
 // Direct detection of red/blue puck plastic (no stickers needed!)
 
 (() => {
-  const BUILD = "v2E";
+  const BUILD = "v2.5";
   
   const $ = (sel) => document.querySelector(sel);
   const video = $("#video");
@@ -22,7 +22,8 @@
   if (buildVersionEl) buildVersionEl.textContent = BUILD;
   
   const LS_KEY = "shuffleboard_v2";
-  
+  const LS_HISTORY_KEY = "shuffleboard_v2_history";
+
   const State = {
     mode: "init",
     drag: null,
@@ -30,6 +31,17 @@
     game: null,
     detectCache: { ts: 0, pucks: [] },
   };
+
+  function loadHistory() {
+    try { return JSON.parse(localStorage.getItem(LS_HISTORY_KEY) || "[]"); }
+    catch { return []; }
+  }
+  function saveToHistory(game) {
+    const hist = loadHistory();
+    hist.unshift(game);          // newest first
+    if (hist.length > 20) hist.pop();
+    localStorage.setItem(LS_HISTORY_KEY, JSON.stringify(hist));
+  }
   
   // Simpler default config
   function defaultConfig() {
@@ -690,6 +702,7 @@
         </div>
         <div class="row">
           <button class="btn grow" id="btnRecalibrate">Recalibrate</button>
+          <button class="btn ghost grow" id="btnHistory">Game History</button>
         </div>
         <div class="sep"></div>
         <div class="row">
@@ -703,26 +716,24 @@
           <div class="badge" id="distortionPBadge">${((cfg.distortion?.p ?? 0) * 100).toFixed(1)}%</div>
         </div>
         ${common}
-        <div class="sep"></div>
-        <div class="row">
-          <button class="btn danger grow" id="btnClearCal">Clear All</button>
-        </div>
       `;
     }
     
     if (mode === "game_setup") {
+      const gp = State.game?._setupPoints ?? 75;
+      const gr = State.game?._setupRounds ?? 5;
       return `
         <h3>New Game</h3>
+        <div class="hint">Game ends when <b>either</b> goal is reached first.</div>
         <div class="row">
-          <label>Goal type</label>
-          <select id="goalType" class="grow">
-            <option value="points">Points</option>
-            <option value="rounds">Rounds</option>
-          </select>
+          <label>Point goal</label>
+          <div class="grow"><input id="goalPoints" type="range" min="0" max="150" step="5" value="${gp}" /></div>
+          <div class="badge" id="goalPointsBadge">${gp === 0 ? "off" : gp + " pts"}</div>
         </div>
         <div class="row">
-          <label>Goal value</label>
-          <input id="goalValue" class="grow" type="number" min="1" max="999" value="75" />
+          <label>Round goal</label>
+          <div class="grow"><input id="goalRounds" type="range" min="0" max="10" step="1" value="${gr}" /></div>
+          <div class="badge" id="goalRoundsBadge">${gr === 0 ? "off" : gr + " rnds"}</div>
         </div>
         <div class="row">
           <button class="btn grow" id="btnCancelGame">Cancel</button>
@@ -819,28 +830,41 @@
     const btnRecal = $("#btnRecalibrate");
     if (btnRecal) btnRecal.onclick = () => { State.mode = "calibrate_triangle"; render(); };
     
-    const btnClear = $("#btnClearCal");
-    if (btnClear) btnClear.onclick = () => {
-      if (!confirm("Clear all calibration?")) return;
-      State.config = defaultConfig();
-      saveConfig();
-      State.mode = "calibrate_triangle";
-      render();
-    };
-    
     const btnStart = $("#btnStartGame");
     if (btnStart) btnStart.onclick = () => { State.mode = "game_setup"; render(); };
+
+    const btnHistory = $("#btnHistory");
+    if (btnHistory) btnHistory.onclick = () => showHistoryPopup();
+
+    // Game setup sliders
+    const gpEl = $("#goalPoints");
+    if (gpEl) {
+      gpEl.oninput = (e) => {
+        const v = Number(e.target.value);
+        const b = $("#goalPointsBadge");
+        if (b) b.textContent = v === 0 ? "off" : v + " pts";
+      };
+    }
+    const grEl = $("#goalRounds");
+    if (grEl) {
+      grEl.oninput = (e) => {
+        const v = Number(e.target.value);
+        const b = $("#goalRoundsBadge");
+        if (b) b.textContent = v === 0 ? "off" : v + " rnds";
+      };
+    }
     
     const btnCancel = $("#btnCancelGame");
     if (btnCancel) btnCancel.onclick = () => { State.mode = "ready"; render(); };
     
     const btnBegin = $("#btnBeginGame");
     if (btnBegin) btnBegin.onclick = () => {
-      const gt = $("#goalType").value;
-      const gv = Number($("#goalValue").value || 0);
+      const goalPoints = Number($("#goalPoints")?.value ?? 75);
+      const goalRounds = Number($("#goalRounds")?.value ?? 5);
       State.game = {
-        goalType: gt,
-        goalValue: clamp(gv, 1, 999),
+        id: Date.now(),
+        goalPoints: goalPoints,
+        goalRounds: goalRounds,
         rounds: [],
         totals: { red:0, blue:0 },
         startedAt: Date.now(),
@@ -859,15 +883,20 @@
       if (!State.game || State.game.rounds.length === 0) return;
       const last = State.game.rounds.pop();
       State.game.totals.blue -= last.blue;
-      State.game.totals.red -= last.red;
+      State.game.totals.red  -= last.red;
       updateScoreboard();
     };
     
     const btnEnd = $("#btnEndGame");
     if (btnEnd) btnEnd.onclick = () => {
       if (!State.game) return;
-      State.game.ended = true;
+      if (!State.game.ended) {
+        State.game.ended  = true;
+        State.game.endedAt = Date.now();
+        saveToHistory(State.game);
+      }
       State.mode = "ready";
+      State.game = null;
       updateScoreboard();
       render();
     };
@@ -896,50 +925,75 @@
     }
     blueTotalEl.textContent = String(g.totals.blue);
     redTotalEl.textContent = String(g.totals.red);
-    
-    let summary = g.ended ? "Ended" : "In progress";
-    summary += ` • Goal: ${g.goalType === "points" ? (g.goalValue + " pts") : (g.goalValue + " rounds")}`;
-    gameSummaryEl.textContent = summary;
-    
+
+    const goalParts = [];
+    if (g.goalPoints > 0) goalParts.push(g.goalPoints + " pts");
+    if (g.goalRounds > 0) goalParts.push(g.goalRounds + " rnds");
+    const goalStr = goalParts.length ? goalParts.join(" or ") : "no limit";
+    gameSummaryEl.textContent = (g.ended ? "Ended" : "In progress") + " • " + goalStr;
+
     roundGridBody.innerHTML = "";
     g.rounds.forEach((r, idx) => {
       const tr = document.createElement("tr");
+      tr.style.cursor = "pointer";
+      tr.title = "Click to view screenshot";
       tr.innerHTML = `
         <td>${idx+1}</td>
         <td class="blue">${r.blue}</td>
         <td class="red">${r.red}</td>
       `;
+      if (r.screenshot) {
+        tr.onclick = () => showRoundPopup(r, idx + 1);
+      }
       roundGridBody.appendChild(tr);
     });
-    
+
     if (!g.ended) {
-      if (g.goalType === "points") {
-        if (g.totals.blue >= g.goalValue || g.totals.red >= g.goalValue) {
-          g.ended = true;
-          hintText.textContent = "Goal reached!";
-        }
-      } else {
-        if (g.rounds.length >= g.goalValue) {
-          g.ended = true;
-          hintText.textContent = "Round goal reached!";
-        }
+      let over = false;
+      if (g.goalPoints > 0 && (g.totals.blue >= g.goalPoints || g.totals.red >= g.goalPoints)) over = true;
+      if (g.goalRounds > 0 && g.rounds.length >= g.goalRounds) over = true;
+      if (over) {
+        g.ended = true;
+        g.endedAt = Date.now();
+        saveToHistory(g);
+        showWinnerPopup(g);
       }
     }
   }
   
+  function captureScreenshot() {
+    try {
+      const c = document.createElement("canvas");
+      c.width  = overlay.width;
+      c.height = overlay.height;
+      const x  = c.getContext("2d");
+      const vr = getVideoRect();
+      x.drawImage(video, vr.x, vr.y, vr.w, vr.h);
+      x.drawImage(overlay, 0, 0);
+      return c.toDataURL("image/jpeg", 0.75);
+    } catch { return null; }
+  }
+
   function doScoreRound() {
     if (!State.game || State.mode !== "game") return;
-    
+
+    const screenshot = captureScreenshot();
     const pucks = detectPucks();
     const scored = scoreRound(pucks);
-    
-    State.game.rounds.push({ blue: scored.sum.blue, red: scored.sum.red, ts: Date.now() });
+
+    const round = {
+      blue: scored.sum.blue,
+      red:  scored.sum.red,
+      ts:   Date.now(),
+      screenshot,
+    };
+
+    State.game.rounds.push(round);
     State.game.totals.blue += scored.sum.blue;
-    State.game.totals.red += scored.sum.red;
-    
+    State.game.totals.red  += scored.sum.red;
+
     updateScoreboard();
-    
-    hintText.textContent = `Round ${State.game.rounds.length}: Blue ${scored.sum.blue}, Red ${scored.sum.red}`;
+    showScoreAnimation(round, State.game.rounds.length);
   }
   
   window.addEventListener("keydown", (e) => {
@@ -950,7 +1004,12 @@
   });
   
   $("#btnResetAll").onclick = () => {
-    if (!confirm("Reset everything?")) return;
+    if (!confirm("Reset calibration? Game history is kept.")) return;
+    if (State.game && !State.game.ended && State.game.rounds.length > 0) {
+      State.game.ended  = true;
+      State.game.endedAt = Date.now();
+      saveToHistory(State.game);
+    }
     State.game = null;
     State.config = defaultConfig();
     saveConfig();
@@ -959,6 +1018,237 @@
     render();
   };
   
+  // ========== POPUPS ==========
+
+  function makeModal(content, onClose) {
+    const backdrop = document.createElement("div");
+    Object.assign(backdrop.style, {
+      position:"fixed", inset:"0", background:"rgba(0,0,0,0.82)",
+      zIndex:"1000", display:"flex", alignItems:"center", justifyContent:"center",
+      padding:"16px", boxSizing:"border-box",
+    });
+    backdrop.innerHTML = content;
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) { backdrop.remove(); if (onClose) onClose(); }
+    });
+    document.body.appendChild(backdrop);
+    return backdrop;
+  }
+
+  function showScoreAnimation(round, roundNum) {
+    const modal = makeModal(`
+      <div id="scoreAnim" style="
+        background:#121a22; border:1px solid #223140; border-radius:18px;
+        padding:32px 40px; text-align:center; min-width:280px; max-width:400px;
+        font-family:-apple-system,system-ui,sans-serif; color:#e7eef7;
+      ">
+        <div style="font-size:13px;color:#9fb0c2;margin-bottom:8px;">ROUND ${roundNum}</div>
+        <div style="display:flex;gap:32px;justify-content:center;align-items:flex-end;margin:16px 0 24px">
+          <div>
+            <div style="font-size:13px;color:#4aa3ff;margin-bottom:6px;">BLUE</div>
+            <div id="animBlue" style="font-size:52px;font-weight:800;color:#4aa3ff;line-height:1">0</div>
+          </div>
+          <div style="font-size:36px;color:#9fb0c2;padding-bottom:4px">vs</div>
+          <div>
+            <div style="font-size:13px;color:#ff5b5b;margin-bottom:6px;">RED</div>
+            <div id="animRed" style="font-size:52px;font-weight:800;color:#ff5b5b;line-height:1">0</div>
+          </div>
+        </div>
+        <div id="animTotals" style="font-size:13px;color:#9fb0c2;margin-bottom:20px;min-height:18px"></div>
+        <button id="animClose" style="
+          background:#1d3552;border:1px solid #2b4b74;color:#e7eef7;
+          padding:10px 28px;border-radius:10px;font-size:15px;cursor:pointer;
+        ">Continue</button>
+      </div>
+    `);
+
+    const animBlueEl = modal.querySelector("#animBlue");
+    const animRedEl  = modal.querySelector("#animRed");
+    const totalsEl   = modal.querySelector("#animTotals");
+    modal.querySelector("#animClose").onclick = () => modal.remove();
+
+    // Count up animation
+    const duration = 900;
+    const start    = performance.now();
+    function tick(now) {
+      const t = Math.min(1, (now - start) / duration);
+      const ease = 1 - Math.pow(1 - t, 3);
+      animBlueEl.textContent = Math.round(ease * round.blue);
+      animRedEl.textContent  = Math.round(ease * round.red);
+      if (t < 1) {
+        requestAnimationFrame(tick);
+      } else {
+        animBlueEl.textContent = round.blue;
+        animRedEl.textContent  = round.red;
+        if (State.game) {
+          totalsEl.textContent = `Totals: Blue ${State.game.totals.blue} — Red ${State.game.totals.red}`;
+        }
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+
+  function showRoundPopup(round, roundNum) {
+    const img = round.screenshot
+      ? `<img src="${round.screenshot}" style="width:100%;border-radius:10px;display:block;margin-bottom:14px;" />`
+      : `<div style="color:#9fb0c2;margin-bottom:14px;text-align:center">No screenshot</div>`;
+    makeModal(`
+      <div style="
+        background:#121a22;border:1px solid #223140;border-radius:18px;
+        padding:24px;max-width:640px;width:100%;font-family:-apple-system,system-ui,sans-serif;color:#e7eef7;
+      ">
+        <div style="font-size:13px;color:#9fb0c2;margin-bottom:12px;">ROUND ${roundNum}</div>
+        ${img}
+        <div style="display:flex;gap:24px;justify-content:center;margin-bottom:16px">
+          <div style="text-align:center">
+            <div style="font-size:11px;color:#4aa3ff">BLUE</div>
+            <div style="font-size:36px;font-weight:800;color:#4aa3ff">${round.blue}</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:11px;color:#ff5b5b">RED</div>
+            <div style="font-size:36px;font-weight:800;color:#ff5b5b">${round.red}</div>
+          </div>
+        </div>
+        <div style="text-align:center">
+          <button onclick="this.closest('[style]').parentNode.remove()" style="
+            background:#1d3552;border:1px solid #2b4b74;color:#e7eef7;
+            padding:8px 24px;border-radius:10px;font-size:14px;cursor:pointer;
+          ">Close</button>
+        </div>
+      </div>
+    `);
+  }
+
+  function showWinnerPopup(game) {
+    const winner = game.totals.blue > game.totals.red ? "blue"
+                 : game.totals.red  > game.totals.blue ? "red"
+                 : "tie";
+    const winColor  = winner === "blue" ? "#4aa3ff" : winner === "red" ? "#ff5b5b" : "#fbbf24";
+    const winLabel  = winner === "tie"  ? "It's a Tie! 🤝" : (winner.toUpperCase() + " WINS! 🎉");
+    const confetti  = ["🎊","🎉","🏆","⭐","✨","🥳"].map(e =>
+      `<span style="position:absolute;font-size:28px;animation:floatUp ${1.5+Math.random()}s ease-out forwards;
+       left:${Math.random()*90}%;top:100%">${e}</span>`).join("");
+
+    const rows = game.rounds.map((r,i) => {
+      const thumb = r.screenshot
+        ? `<img src="${r.screenshot}" onclick="document.getElementById('bigShot').src=this.src;document.getElementById('bigShotWrap').style.display='flex'"
+             style="width:48px;height:32px;object-fit:cover;border-radius:4px;cursor:pointer;border:1px solid #223140" />`
+        : `<span style="color:#9fb0c2;font-size:11px">—</span>`;
+      return `<tr>
+        <td style="padding:6px 8px;border-bottom:1px solid #1a2535">${i+1}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #1a2535;color:#4aa3ff;font-weight:700">${r.blue}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #1a2535;color:#ff5b5b;font-weight:700">${r.red}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #1a2535">${thumb}</td>
+      </tr>`;
+    }).join("");
+
+    makeModal(`
+      <div style="
+        background:#0b0f14;border:1px solid #223140;border-radius:20px;
+        padding:32px;max-width:520px;width:100%;font-family:-apple-system,system-ui,sans-serif;
+        color:#e7eef7;position:relative;overflow:hidden;max-height:90vh;overflow-y:auto;
+      ">
+        <style>@keyframes floatUp{to{transform:translateY(-120vh) rotate(360deg);opacity:0}}</style>
+        <div style="position:absolute;inset:0;pointer-events:none;overflow:hidden">${confetti}</div>
+        <div style="font-size:32px;font-weight:900;color:${winColor};text-align:center;margin-bottom:4px">${winLabel}</div>
+        <div style="text-align:center;margin-bottom:24px">
+          <span style="font-size:48px;font-weight:800;color:#4aa3ff">${game.totals.blue}</span>
+          <span style="font-size:24px;color:#9fb0c2;margin:0 12px">—</span>
+          <span style="font-size:48px;font-weight:800;color:#ff5b5b">${game.totals.red}</span>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:20px">
+          <thead>
+            <tr>
+              <th style="text-align:left;padding:6px 8px;color:#9fb0c2;font-weight:600">#</th>
+              <th style="text-align:left;padding:6px 8px;color:#4aa3ff;font-weight:600">Blue</th>
+              <th style="text-align:left;padding:6px 8px;color:#ff5b5b;font-weight:600">Red</th>
+              <th style="text-align:left;padding:6px 8px;color:#9fb0c2;font-weight:600">Shot</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <!-- inline screenshot viewer -->
+        <div id="bigShotWrap" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:2000;align-items:center;justify-content:center;padding:16px"
+             onclick="this.style.display='none'">
+          <img id="bigShot" style="max-width:100%;max-height:90vh;border-radius:10px" />
+        </div>
+        <div style="text-align:center;display:flex;gap:12px;justify-content:center">
+          <button onclick="this.closest('[style]').parentNode.remove()" style="
+            background:#1d3552;border:1px solid #2b4b74;color:#e7eef7;
+            padding:10px 28px;border-radius:10px;font-size:15px;cursor:pointer
+          ">Close</button>
+          <button id="btnNewGameFromWinner" style="
+            background:#234a22;border:1px solid #36d399;color:#baf7dd;
+            padding:10px 28px;border-radius:10px;font-size:15px;cursor:pointer
+          ">New Game</button>
+        </div>
+      </div>
+    `);
+
+    document.getElementById("btnNewGameFromWinner")?.addEventListener("click", () => {
+      document.querySelectorAll("[style*='position:fixed']").forEach(el => el.remove());
+      State.game = null;
+      State.mode = "game_setup";
+      updateScoreboard();
+      render();
+    });
+  }
+
+  function showHistoryPopup() {
+    const hist = loadHistory();
+    if (!hist.length) {
+      makeModal(`<div style="background:#121a22;border:1px solid #223140;border-radius:18px;padding:32px;color:#e7eef7;font-family:-apple-system,system-ui,sans-serif;text-align:center;min-width:240px">
+        <div style="color:#9fb0c2;margin-bottom:16px">No completed games yet.</div>
+        <button onclick="this.closest('[style]').parentNode.remove()" style="background:#1d3552;border:1px solid #2b4b74;color:#e7eef7;padding:8px 20px;border-radius:8px;cursor:pointer">Close</button>
+      </div>`);
+      return;
+    }
+
+    const rows = hist.map((g, i) => {
+      const d = new Date(g.startedAt);
+      const dateStr = d.toLocaleDateString() + " " + d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+      const winner = g.totals.blue > g.totals.red ? "🔵 Blue" : g.totals.red > g.totals.blue ? "🔴 Red" : "Tie";
+      return `<tr style="cursor:pointer" data-idx="${i}" class="hist-row">
+        <td style="padding:10px 12px;border-bottom:1px solid #1a2535;color:#9fb0c2;font-size:12px;white-space:nowrap">${dateStr}</td>
+        <td style="padding:10px 12px;border-bottom:1px solid #1a2535;font-weight:700">${winner}</td>
+        <td style="padding:10px 12px;border-bottom:1px solid #1a2535;color:#4aa3ff;font-weight:700">${g.totals.blue}</td>
+        <td style="padding:10px 12px;border-bottom:1px solid #1a2535;color:#ff5b5b;font-weight:700">${g.totals.red}</td>
+        <td style="padding:10px 12px;border-bottom:1px solid #1a2535;color:#9fb0c2;font-size:12px">${g.rounds.length} rnds</td>
+      </tr>`;
+    }).join("");
+
+    const modal = makeModal(`
+      <div style="background:#0b0f14;border:1px solid #223140;border-radius:18px;padding:24px;
+        max-width:560px;width:100%;font-family:-apple-system,system-ui,sans-serif;color:#e7eef7;max-height:85vh;overflow-y:auto">
+        <div style="font-size:16px;font-weight:700;margin-bottom:16px">Game History</div>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead>
+            <tr style="color:#9fb0c2;font-size:11px;text-transform:uppercase;letter-spacing:.5px">
+              <th style="text-align:left;padding:6px 12px">Date</th>
+              <th style="text-align:left;padding:6px 12px">Winner</th>
+              <th style="padding:6px 12px;color:#4aa3ff">Blue</th>
+              <th style="padding:6px 12px;color:#ff5b5b">Red</th>
+              <th style="padding:6px 12px">Rnds</th>
+            </tr>
+          </thead>
+          <tbody id="histBody">${rows}</tbody>
+        </table>
+        <div style="text-align:center;margin-top:20px">
+          <button onclick="this.closest('[style]').parentNode.remove()" style="
+            background:#1d3552;border:1px solid #2b4b74;color:#e7eef7;
+            padding:8px 24px;border-radius:10px;font-size:14px;cursor:pointer">Close</button>
+        </div>
+      </div>
+    `);
+
+    modal.querySelectorAll(".hist-row").forEach(row => {
+      row.addEventListener("click", () => {
+        modal.remove();
+        showWinnerPopup(hist[Number(row.dataset.idx)]);
+      });
+    });
+  }
+
   // ========== OVERLAY DRAWING ==========
   function getLiveDetections() {
     const now = performance.now();
