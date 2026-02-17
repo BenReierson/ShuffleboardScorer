@@ -1889,12 +1889,12 @@
 
         // Centered label inside the puck
         const label = (scored ? `${points}` : p.team.toUpperCase());
-        const fontSize = Math.max(16, Math.min(24, effR * 1.05 / devicePixelRatio));
+        const fontSize = Math.max(14, Math.min(22, effR * 1.05 / devicePixelRatio));
         ctx.font = `bold ${fontSize*devicePixelRatio}px system-ui`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         const m = ctx.measureText(label);
-        const pad = 3 * devicePixelRatio;
+        const pad = 1 * devicePixelRatio;
         const bgW = m.width + pad * 2;
         const bgH = fontSize * devicePixelRatio + pad * 2;
         ctx.fillStyle = "rgba(0,0,0,0.75)";
