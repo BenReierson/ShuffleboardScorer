@@ -2,7 +2,7 @@
 // Direct detection of red/blue puck plastic (no stickers needed!)
 
 (() => {
-  const BUILD = "v2b";
+  const BUILD = "v2c";
   
   const $ = (sel) => document.querySelector(sel);
   const video = $("#video");
@@ -66,10 +66,21 @@
       },
       
       detection: {
-        minBlobArea: 200,     // Minimum pixels for a valid blob
-        maxBlobArea: 20000,   // Maximum pixels
-        minCircularity: 0.4,  // How round it needs to be (0-1)
-      }
+        minBlobArea: 200,
+        maxBlobArea: 20000,
+        minCircularity: 0.4,
+      },
+
+      // Radial lens-distortion correction for collision detection.
+      // The camera compresses features near the edges, so pucks there appear
+      // smaller than puckRadius pixels.  We shrink the effective collision
+      // radius by (1 - k * r²) where r ∈ [0,1] is the normalised distance
+      // from the frame centre to the frame corner.
+      // k = 0  → no correction (circle stays constant everywhere)
+      // k = 0.4 → radius at the corner is 60% of the centre radius
+      distortion: {
+        k: 0.0,   // radial shrink coefficient  (tune in calibration)
+      },
     };
   }
   
@@ -210,7 +221,33 @@
     };
   }
   
-  // ========== COLOR DETECTION - SIMPLIFIED ==========
+  // ========== DISTORTION CORRECTION ==========
+  // Returns the effective collision radius (in CSS-pixel / config space) for
+  // a puck at position (px, py).  Puck positions are in the same unscaled
+  // coordinate space as config.tri / config.lines (i.e. CSS pixels, NOT
+  // multiplied by devicePixelRatio).
+  //
+  // The radial falloff model:  effectiveR = puckRadius * (1 - k * r²)
+  //   r  = distance from frame centre / distance from centre to nearest corner
+  //        clamped to [0, 1] so pucks exactly at the corner get full shrink.
+  //
+  // Visual: the drawn circle on the overlay uses this same radius so what you
+  // see is exactly what the collision check uses.
+  function effectivePuckRadius(px, py) {
+    const { puckRadius, distortion } = State.config;
+    const k = distortion ? distortion.k : 0;
+    if (!k) return puckRadius;
+
+    // Frame centre and max-corner distance in CSS-pixel space
+    const cW = overlay.width  / devicePixelRatio;
+    const cH = overlay.height / devicePixelRatio;
+    const cx = cW / 2;
+    const cy = cH / 2;
+    const maxDist = Math.hypot(cx, cy);  // centre → corner
+
+    const r = Math.min(1, Math.hypot(px - cx, py - cy) / maxDist);
+    return Math.max(4, puckRadius * (1 - k * r * r));
+  }
   function rgbToHsv(r,g,b){
     r/=255; g/=255; b/=255;
     const max = Math.max(r,g,b), min = Math.min(r,g,b);
@@ -434,25 +471,28 @@
   // ========== SCORING ==========
   function scoreRound(pucks) {
     ensureTipIsC();
-    const { tri, lines, puckRadius, lineThickness, touchEpsilon } = State.config;
+    const { tri, lines, lineThickness, touchEpsilon } = State.config;
     const { A, B, C } = tri;
-    
+
     const edges = [
       {a:A, b:B},
       {a:B, b:C},
       {a:C, b:A},
     ];
-    
+
     const tip = C;
     const tipSide = lines.map(L => Math.sign(whichSide(tip, L.p1, L.p2)) || 1);
-    
+
     const results = [];
-    const minClear = puckRadius + (lineThickness/2) + touchEpsilon;
-    
+
     for (const puck of pucks) {
       const center = { x: puck.x, y: puck.y };
-      
-      // Check triangle edges
+
+      // Per-puck collision radius — accounts for radial lens distortion
+      const effR = effectivePuckRadius(puck.x, puck.y);
+      const minClear = effR + (lineThickness / 2) + touchEpsilon;
+
+      // Check outer triangle edges
       let touchesEdge = false;
       for (const edge of edges) {
         if (distancePointToSegment(center, edge.a, edge.b) < minClear) {
@@ -460,51 +500,49 @@
           break;
         }
       }
-      
+
       if (touchesEdge) {
-        results.push({ ...puck, points: 0, valid: false, zone: "out" });
+        results.push({ ...puck, points: 0, valid: false, zone: "out", effR });
         continue;
       }
-      
-      // Check if inside triangle at all
+
+      // Must be inside triangle
       if (!pointInTri(center, A, B, C)) {
-        results.push({ ...puck, points: 0, valid: false, zone: "out" });
+        results.push({ ...puck, points: 0, valid: false, zone: "out", effR });
         continue;
       }
-      
-      // Determine zone by checking boundary lines
-      let zone = 10; // Start with highest zone
-      
+
+      // Determine scoring zone by checking boundary lines
+      let zone = 10;
+
       for (let i = 0; i < lines.length; i++) {
         const L = lines[i];
         const distToLine = distancePointToSegment(center, L.p1, L.p2);
-        
+
         if (distToLine < minClear) {
-          // Touching this boundary
-          results.push({ ...puck, points: 0, valid: false, zone: "line" });
+          results.push({ ...puck, points: 0, valid: false, zone: "line", effR });
           zone = null;
           break;
         }
-        
+
         const side = Math.sign(whichSide(center, L.p1, L.p2)) || 1;
         if (side !== tipSide[i]) {
-          // Past this boundary (going away from tip)
           if (i === 0) zone = 8;
           else if (i === 1) zone = 7;
           else zone = -10;
         }
       }
-      
+
       if (zone !== null) {
-        results.push({ ...puck, points: zone, valid: true, zone: `${zone}pt` });
+        results.push({ ...puck, points: zone, valid: true, zone: `${zone}pt`, effR });
       }
     }
-    
+
     const sum = { red: 0, blue: 0 };
     for (const r of results) {
       if (r.valid) sum[r.team] += r.points;
     }
-    
+
     return { results, sum };
   }
   
@@ -550,6 +588,7 @@
     }
     
     if (mode === "calibrate_colors") {
+      const k = cfg.distortion ? cfg.distortion.k : 0;
       return `
         <h3>Step 3/3: Puck Colors</h3>
         <div class="hint">
@@ -570,7 +609,18 @@
           <button class="btn grow" id="btnSampleBlue">Sample Blue Puck</button>
         </div>
         <div class="sep"></div>
-        <div class="hint"><b>Fine-tuning</b> (if detection isn't working)</div>
+        <div class="hint"><b>Lens distortion correction</b><br/>
+          Pucks near the edges appear smaller to the camera.
+          Increase <b>Edge shrink</b> until edge pucks stop falsely touching lines.
+          The drawn circle shows the actual collision zone — it will visibly shrink toward the corners.
+        </div>
+        <div class="row">
+          <label>Edge shrink (k)</label>
+          <div class="grow"><input id="distortionK" type="range" min="0" max="0.7" step="0.02" value="${k.toFixed(2)}" /></div>
+          <div class="badge" id="distortionKBadge">${(k * 100).toFixed(0)}%</div>
+        </div>
+        <div class="sep"></div>
+        <div class="hint"><b>Color fine-tuning</b> (if detection isn't working)</div>
         <div class="row">
           <label>Red hue range</label>
           <div class="grow"><input id="redHueRange" type="range" min="10" max="60" step="5" value="${cfg.red.hueRange}" /></div>
@@ -600,6 +650,7 @@
     }
     
     if (mode === "ready") {
+      const k = cfg.distortion ? cfg.distortion.k : 0;
       return `
         <h3>Ready!</h3>
         <div class="hint">Calibration complete. Start a game to begin automatic scoring.</div>
@@ -608,6 +659,12 @@
         </div>
         <div class="row">
           <button class="btn grow" id="btnRecalibrate">Recalibrate</button>
+        </div>
+        <div class="sep"></div>
+        <div class="row">
+          <label>Edge shrink (k)</label>
+          <div class="grow"><input id="distortionK" type="range" min="0" max="0.7" step="0.02" value="${k.toFixed(2)}" /></div>
+          <div class="badge" id="distortionKBadge">${(k * 100).toFixed(0)}%</div>
         </div>
         ${common}
         <div class="sep"></div>
@@ -681,6 +738,15 @@
     if (vm) vm.oninput = (e) => { 
       State.config.red.valMin = State.config.blue.valMin = Number(e.target.value); 
       saveConfig(); 
+    };
+
+    const dkEl = $("#distortionK");
+    if (dkEl) dkEl.oninput = (e) => {
+      if (!State.config.distortion) State.config.distortion = { k: 0 };
+      State.config.distortion.k = Number(e.target.value);
+      const badge = $("#distortionKBadge");
+      if (badge) badge.textContent = (State.config.distortion.k * 100).toFixed(0) + "%";
+      saveConfig();
     };
     
     const btnNext = $("#btnNext");
@@ -953,16 +1019,30 @@
       }
       
       if (State.mode === "calibrate_colors") {
-        // Show radius preview
-        const mid = { x: W*0.5, y: H*0.5 };
-        ctx.save();
-        ctx.strokeStyle = "rgba(74,163,255,0.8)";
-        ctx.lineWidth = 2*devicePixelRatio;
-        ctx.setLineDash([5*devicePixelRatio, 5*devicePixelRatio]);
-        ctx.beginPath();
-        ctx.arc(mid.x, mid.y, r, 0, Math.PI*2);
-        ctx.stroke();
-        ctx.restore();
+        // Draw radius preview circles at centre and at each corner so the
+        // user can see how the distortion correction is shrinking the radius.
+        const previewPoints = [
+          { x: W * 0.5,  y: H * 0.5 },   // centre
+          { x: W * 0.15, y: H * 0.15 },   // top-left
+          { x: W * 0.85, y: H * 0.15 },   // top-right
+          { x: W * 0.15, y: H * 0.85 },   // bottom-left
+          { x: W * 0.85, y: H * 0.85 },   // bottom-right
+        ];
+
+        for (const pt of previewPoints) {
+          const cssX = pt.x / devicePixelRatio;
+          const cssY = pt.y / devicePixelRatio;
+          const effR = effectivePuckRadius(cssX, cssY) * devicePixelRatio;
+
+          ctx.save();
+          ctx.strokeStyle = "rgba(74,163,255,0.55)";
+          ctx.lineWidth = 2 * devicePixelRatio;
+          ctx.setLineDash([5*devicePixelRatio, 5*devicePixelRatio]);
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, effR, 0, Math.PI*2);
+          ctx.stroke();
+          ctx.restore();
+        }
       }
     }
     
@@ -980,27 +1060,33 @@
         const key = `${Math.round(p.x)}:${Math.round(p.y)}:${p.team}`;
         const scored = byKey.get(key);
         const points = scored ? scored.points : 0;
-        const valid = scored ? scored.valid : true;
-        
+        const valid  = scored ? scored.valid  : true;
+
         const col = p.team === "blue" ? "rgba(74,163,255,0.95)" : "rgba(255,91,91,0.95)";
-        
+
+        // Use the same effective radius the collision check used so the
+        // drawn circle is always honest about what was tested.
+        const effR = (scored && scored.effR != null)
+          ? scored.effR * devicePixelRatio
+          : effectivePuckRadius(p.x, p.y) * devicePixelRatio;
+
         ctx.save();
         ctx.strokeStyle = col;
         ctx.lineWidth = 3*devicePixelRatio;
         ctx.beginPath();
-        ctx.arc(p.x*devicePixelRatio, p.y*devicePixelRatio, r, 0, Math.PI*2);
+        ctx.arc(p.x*devicePixelRatio, p.y*devicePixelRatio, effR, 0, Math.PI*2);
         ctx.stroke();
-        
+
         // Label
         const label = (scored ? `${points}` : p.team.toUpperCase());
         ctx.font = `${13*devicePixelRatio}px system-ui`;
-        const tx = p.x*devicePixelRatio + r + 5*devicePixelRatio;
+        const tx = p.x*devicePixelRatio + effR + 5*devicePixelRatio;
         const ty = p.y*devicePixelRatio;
-        
+
         ctx.fillStyle = "rgba(0,0,0,0.7)";
         const m = ctx.measureText(label);
         ctx.fillRect(tx-3*devicePixelRatio, ty-12*devicePixelRatio, m.width+6*devicePixelRatio, 16*devicePixelRatio);
-        
+
         ctx.fillStyle = valid ? col : "rgba(255,255,255,0.9)";
         ctx.fillText(label, tx, ty);
         ctx.restore();
