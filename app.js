@@ -70,12 +70,12 @@
       },
       stickers: {
         // Black sticker on BLUE pucks, white sticker on RED pucks
-        blackThresh: 60,
-        whiteThresh: 200,
-        minArea: 80,
-        maxArea: 6000,
-        aspectMin: 0.6,
-        aspectMax: 1.7,
+        blackThresh: 95,    // Increased from 60 - more realistic for dark stickers
+        whiteThresh: 165,   // Decreased from 200 - more realistic for light stickers
+        minArea: 50,        // Decreased from 80 - allow smaller detections
+        maxArea: 8000,      // Increased from 6000 - allow larger detections
+        aspectMin: 0.5,     // More lenient from 0.6
+        aspectMax: 2.0,     // More lenient from 1.7
       }
     };
   }
@@ -229,9 +229,9 @@
     // Draw current video frame into work canvas (same size as overlay)
     wctx.drawImage(video, 0, 0, W, H);
 
-    // Downscale for processing speed
-    const procW = Math.round(W / 2);
-    const procH = Math.round(H / 2);
+    // Downscale for processing speed (reduced from /2 to /1.5 for better sticker detection)
+    const procW = Math.round(W / 1.5);
+    const procH = Math.round(H / 1.5);
 
     // Draw scaled frame into temp canvas for pixel access
     const tmp = detectPucksSnapshot._tmp || (detectPucksSnapshot._tmp = document.createElement("canvas"));
@@ -292,10 +292,13 @@
       return dst;
     }
     function clean(mask){
-      const m1 = erode(mask, procW, procH, 5);
-      const m2 = dilate(m1, procW, procH, 3);
-      const m3 = dilate(m2, procW, procH, 3);
-      return erode(m3, procW, procH, 4);
+      // Gentler morphology to preserve small sticker detections
+      // Old: erode(5), dilate(3), dilate(3), erode(4) - too aggressive
+      // New: erode(4), dilate(2), dilate(2), erode(3) - gentler
+      const m1 = erode(mask, procW, procH, 4);  // Reduced from 5
+      const m2 = dilate(m1, procW, procH, 2);   // Reduced from 3
+      const m3 = dilate(m2, procW, procH, 2);   // Reduced from 3
+      return erode(m3, procW, procH, 3);        // Reduced from 4
     }
 
     // Blob extraction via flood fill
@@ -376,28 +379,53 @@
 
       function filter(blobs, team){
         const out = [];
+        const debug = { total: blobs.length, filtered: [] };
+        
         for (const b of blobs){
-          if (b.area < st.minArea || b.area > st.maxArea) continue;
-          const ar = b.bbox.w / b.bbox.h;
-          if (ar < st.aspectMin || ar > st.aspectMax) continue;
-          if (Math.min(b.bbox.w, b.bbox.h) < 4) continue;
-
-          out.push({
-            team,
-            x: b.cx * scaleX,
-            y: b.cy * scaleY,
-            radius: State.config.puckRadius,
-            _area: b.area
-          });
+          let reason = null;
+          if (b.area < st.minArea) reason = `area too small (${b.area} < ${st.minArea})`;
+          else if (b.area > st.maxArea) reason = `area too large (${b.area} > ${st.maxArea})`;
+          else {
+            const ar = b.bbox.w / b.bbox.h;
+            if (ar < st.aspectMin) reason = `aspect too narrow (${ar.toFixed(2)} < ${st.aspectMin})`;
+            else if (ar > st.aspectMax) reason = `aspect too wide (${ar.toFixed(2)} > ${st.aspectMax})`;
+            else if (Math.min(b.bbox.w, b.bbox.h) < 4) reason = `bbox too small (${Math.min(b.bbox.w, b.bbox.h)} < 4)`;
+          }
+          
+          if (reason) {
+            debug.filtered.push({ ...b, reason });
+          } else {
+            out.push({
+              team,
+              x: b.cx * scaleX,
+              y: b.cy * scaleY,
+              radius: State.config.puckRadius,
+              _area: b.area
+            });
+          }
         }
         out.sort((a,b)=>b._area-a._area);
-        return out.slice(0, 8);
+        const result = out.slice(0, 8);
+        result._debug = debug;
+        return result;
       }
 
       // Black sticker => BLUE puck. White sticker => RED puck.
       const blue = filter(blobsBlack, "blue");
       const red  = filter(blobsWhite, "red");
-      return [...blue, ...red];
+      
+      // Store debug info for display
+      const allPucks = [...blue, ...red];
+      allPucks._debugInfo = {
+        blackBlobs: blobsBlack.length,
+        whiteBlobs: blobsWhite.length,
+        blueFiltered: blue._debug,
+        redFiltered: red._debug,
+        bluePucks: blue.length,
+        redPucks: red.length
+      };
+      
+      return allPucks;
     }
 
     // --- Mode B: Legacy color detection (red/blue plastic) ---
@@ -615,6 +643,9 @@
     if (mode === "calibrate_pucks") {
       const red = cfg.colors.red;
       const blue = cfg.colors.blue;
+      const st = cfg.stickers;
+      const isSticker = cfg.detectorMode === "sticker";
+      
       return `
         <h3>Calibration 3/3 — Pucks</h3>
         <div class="row">
@@ -626,7 +657,7 @@
         </div>
         <div class="hint">
           1) Adjust <b>puck radius</b> to match what you see.<br/>
-          2) Click the <b>red puck</b>, then the <b>blue puck</b> in the video to sample their colors.
+          2) ${isSticker ? "Click <b>Sample Black</b>, then click on the BLUE puck's black sticker. Then <b>Sample White</b> and click on the RED puck's white sticker." : "Click the <b>red puck</b>, then the <b>blue puck</b> in the video to sample their colors."}
         </div>
         <div class="row">
           <label>Puck radius</label>
@@ -639,46 +670,59 @@
           <div class="badge">±${Math.round(cfg.puckRadiusTolerance*100)}%</div>
         </div>
         <div class="sep"></div>
-        <div class="hint"><b>Detection tuning</b> (adjust until you see exactly your pucks, stable)</div>
-        <div class="row">
-          <label>Global S min</label>
-          <div class="grow"><input id="sMin" type="range" min="0.10" max="0.90" step="0.02" value="${cfg.colors.sMin}" /></div>
-          <div class="badge">${cfg.colors.sMin.toFixed(2)}</div>
-        </div>
-        <div class="row">
-          <label>Global V min</label>
-          <div class="grow"><input id="vMin" type="range" min="0.05" max="0.90" step="0.02" value="${cfg.colors.vMin}" /></div>
-          <div class="badge">${cfg.colors.vMin.toFixed(2)}</div>
-        </div>
-        <div class="row">
-          <label>Red hue tol</label>
-          <div class="grow"><input id="redHTol" type="range" min="6" max="60" step="1" value="${cfg.colors.red.hTol}" /></div>
-          <div class="badge">±${Math.round(cfg.colors.red.hTol)}°</div>
-        </div>
-        <div class="row">
-          <label>Blue hue tol</label>
-          <div class="grow"><input id="blueHTol" type="range" min="6" max="60" step="1" value="${cfg.colors.blue.hTol}" /></div>
-          <div class="badge">±${Math.round(cfg.colors.blue.hTol)}°</div>
-        </div>
-        <div class="row">
-          <button class="btn grow" id="btnLoosen">Loosen</button>
-          <button class="btn grow" id="btnTighten">Tighten</button>
-        </div>
-        <div class="row">
-          <button class="btn primary grow" id="btnTestDetect">Test detection now</button>
-          <div class="badge" id="detectSummary">—</div>
-        </div>
+        
+        ${isSticker ? `
+          <div class="hint"><b>Sticker Detection Tuning</b></div>
+          <div class="row">
+            <label>Black threshold</label>
+            <div class="grow"><input id="blackThresh" type="range" min="10" max="150" step="5" value="${st.blackThresh}" /></div>
+            <div class="badge">≤${st.blackThresh}</div>
+          </div>
+          <div class="row">
+            <label>White threshold</label>
+            <div class="grow"><input id="whiteThresh" type="range" min="100" max="250" step="5" value="${st.whiteThresh}" /></div>
+            <div class="badge">≥${st.whiteThresh}</div>
+          </div>
+          <div class="row">
+            <button class="btn grow" id="btnSampleBlack">Sample Black (Blue puck)</button>
+          </div>
+          <div class="row">
+            <button class="btn grow" id="btnSampleWhite">Sample White (Red puck)</button>
+          </div>
+        ` : `
+          <div class="hint"><b>Color Detection Tuning</b> (adjust until you see exactly your pucks, stable)</div>
+          <div class="row">
+            <label>Global S min</label>
+            <div class="grow"><input id="sMin" type="range" min="0.10" max="0.90" step="0.02" value="${cfg.colors.sMin}" /></div>
+            <div class="badge">${cfg.colors.sMin.toFixed(2)}</div>
+          </div>
+          <div class="row">
+            <label>Global V min</label>
+            <div class="grow"><input id="vMin" type="range" min="0.05" max="0.90" step="0.02" value="${cfg.colors.vMin}" /></div>
+            <div class="badge">${cfg.colors.vMin.toFixed(2)}</div>
+          </div>
+          <div class="row">
+            <label>Red hue tol</label>
+            <div class="grow"><input id="redHTol" type="range" min="6" max="60" step="1" value="${cfg.colors.red.hTol}" /></div>
+            <div class="badge">±${Math.round(cfg.colors.red.hTol)}°</div>
+          </div>
+          <div class="row">
+            <label>Blue hue tol</label>
+            <div class="grow"><input id="blueHTol" type="range" min="6" max="60" step="1" value="${cfg.colors.blue.hTol}" /></div>
+            <div class="badge">±${Math.round(cfg.colors.blue.hTol)}°</div>
+          </div>
+          <div class="row">
+            <button class="btn grow" id="btnSampleRed">Sample Red</button>
+            <div class="badge">H=${Math.round(red.h)}±${Math.round(red.hTol)} S≥${red.s.toFixed(2)} V≥${red.v.toFixed(2)}</div>
+          </div>
+          <div class="row">
+            <button class="btn grow" id="btnSampleBlue">Sample Blue</button>
+            <div class="badge">H=${Math.round(blue.h)}±${Math.round(blue.hTol)} S≥${blue.s.toFixed(2)} V≥${blue.v.toFixed(2)}</div>
+          </div>
+        `}
 
         ${common}
         <div class="sep"></div>
-        <div class="row">
-          <button class="btn grow" id="btnSampleRed">Sample Red</button>
-          <div class="badge">H=${Math.round(red.h)}±${Math.round(red.hTol)} S≥${red.s.toFixed(2)} V≥${red.v.toFixed(2)}</div>
-        </div>
-        <div class="row">
-          <button class="btn grow" id="btnSampleBlue">Sample Blue</button>
-          <div class="badge">H=${Math.round(blue.h)}±${Math.round(blue.hTol)} S≥${blue.s.toFixed(2)} V≥${blue.v.toFixed(2)}</div>
-        </div>
         <div class="row">
           <label>Preview detection</label>
           <div class="grow"><input id="togglePreview" type="checkbox" ${State.detectionPreview.enabled ? "checked":""} /></div>
@@ -687,7 +731,7 @@
           <button class="btn grow" id="btnBack">Back</button>
           <button class="btn primary grow" id="btnFinish">Finish calibration</button>
         </div>
-        <div class="kbd">While sampling: click on the puck plastic (not the shiny metal center). Detected pucks will be drawn with labels.</div>
+        <div class="kbd">${isSticker ? "Click on the sticker center, not the metal puck edge." : "Click on the puck plastic (not the shiny metal center)."} Detected pucks will be drawn with labels.</div>
       `;
     }
 
@@ -972,6 +1016,16 @@
     if (State.mode !== "calibrate_triangle") {
       scored = scoreRound(pucks);
     }
+    
+    // Update debug info in hint text during calibration
+    if (State.mode === "calibrate_pucks" && pucks._debugInfo) {
+      const d = pucks._debugInfo;
+      const isSticker = State.config.detectorMode === "sticker";
+      if (isSticker) {
+        hintText.textContent = `Detection: ${d.blackBlobs} black blobs → ${d.bluePucks} blue pucks | ${d.whiteBlobs} white blobs → ${d.redPucks} red pucks`;
+      }
+    }
+    
     State.detectCache = { ts: now, pucks, scored };
     return State.detectCache;
   }
@@ -1206,15 +1260,29 @@
     wctx.drawImage(video, 0, 0, W, H);
     const x = Math.round(clamp(pos.x, 0, W-1));
     const y = Math.round(clamp(pos.y, 0, H-1));
-    const px = wctx.getImageData(x, y, 1, 1).data;
-    const gray = (0.2126*px[0] + 0.7152*px[1] + 0.0722*px[2]);
+    
+    // Sample 3x3 area and average to reduce noise
+    let graySum = 0, count = 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const sx = clamp(x + dx, 0, W-1);
+        const sy = clamp(y + dy, 0, H-1);
+        const px = wctx.getImageData(sx, sy, 1, 1).data;
+        graySum += (0.2126*px[0] + 0.7152*px[1] + 0.0722*px[2]);
+        count++;
+      }
+    }
+    const gray = graySum / count;
 
     if (which === "black") {
-      State.config.stickers.blackThresh = Math.min(140, Math.max(5, Math.round(gray + 20)));
-      hintText.textContent = `Sampled BLACK sticker at gray=${Math.round(gray)} → black≤${State.config.stickers.blackThresh}`;
+      // Set threshold to allow pixels up to 40% brighter than sample
+      // This handles slight lighting variations and edge pixels
+      State.config.stickers.blackThresh = Math.min(150, Math.max(20, Math.round(gray * 1.4)));
+      hintText.textContent = `Sampled BLACK sticker at gray=${Math.round(gray)} → black≤${State.config.stickers.blackThresh} (allowing +40% brightness)`;
     } else {
-      State.config.stickers.whiteThresh = Math.min(250, Math.max(120, Math.round(gray - 20)));
-      hintText.textContent = `Sampled WHITE sticker at gray=${Math.round(gray)} → white≥${State.config.stickers.whiteThresh}`;
+      // Set threshold to allow pixels down to 15% darker than sample
+      State.config.stickers.whiteThresh = Math.min(245, Math.max(100, Math.round(gray * 0.85)));
+      hintText.textContent = `Sampled WHITE sticker at gray=${Math.round(gray)} → white≥${State.config.stickers.whiteThresh} (allowing -15% brightness)`;
     }
     saveConfig();
   }
