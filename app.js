@@ -2,7 +2,7 @@
 // Direct detection of red/blue puck plastic (no stickers needed!)
 
 (() => {
-  const BUILD = "v2.6";
+  const BUILD = "v2.7";
   
   const $ = (sel) => document.querySelector(sel);
   const video = $("#video");
@@ -1126,11 +1126,17 @@
     const pucks = detectPucks();
     const scored = scoreRound(pucks);
 
+    // Store individual puck scores for the breakdown display
+    const puckScores = scored.results
+      .filter(r => r.valid)
+      .map(r => ({ team: r.team, points: r.points }));
+
     const round = {
       blue: scored.sum.blue,
       red:  scored.sum.red,
       ts:   Date.now(),
       screenshot,
+      puckScores,
     };
 
     State.game.rounds.push(round);
@@ -1265,6 +1271,28 @@
       ? `<img src="${round.screenshot}" style="width:100%;border-radius:12px;display:block;margin-bottom:18px;max-height:380px;object-fit:cover;" />`
       : "";
 
+    // Build puck breakdown HTML
+    const pucks = round.puckScores || [];
+    const bluePucks = pucks.filter(p => p.team === "blue").sort((a,b) => b.points - a.points);
+    const redPucks  = pucks.filter(p => p.team === "red").sort((a,b) => b.points - a.points);
+
+    function puckBreakdownCol(list, color, total) {
+      if (!list.length) return `<span style="color:#4a5a6a">—</span>`;
+      const parts = list.map(p => `<span>${p.points}</span>`).join(`<span style="color:#4a5a6a"> + </span>`);
+      return parts + `<span style="color:#4a5a6a"> = </span><span style="font-weight:800;color:${color}">${total}</span>`;
+    }
+
+    const breakdownHtml = (bluePucks.length || redPucks.length) ? `
+      <div style="display:flex;gap:0;margin-bottom:6px;border:1px solid #1e3040;border-radius:12px;overflow:hidden;font-size:14px">
+        <div style="flex:1;padding:8px 10px;background:#0a1525;color:#4aa3ff;text-align:center">
+          ${puckBreakdownCol(bluePucks, "#4aa3ff", round.blue)}
+        </div>
+        <div style="width:1px;background:#1e3040"></div>
+        <div style="flex:1;padding:8px 10px;background:#0a1525;color:#ff5b5b;text-align:center">
+          ${puckBreakdownCol(redPucks, "#ff5b5b", round.red)}
+        </div>
+      </div>` : "";
+
     let undone = false;
     let dismissed = false;
 
@@ -1286,6 +1314,9 @@
       ">
         <div style="font-size:16px;letter-spacing:1.5px;color:#9fb0c2;margin-bottom:16px;text-transform:uppercase;font-weight:700">Round ${roundNum}</div>
         ${img}
+
+        <!-- Puck breakdown -->
+        ${breakdownHtml}
 
         <!-- Round scores -->
         <div style="display:flex;gap:0;justify-content:center;align-items:stretch;margin-bottom:6px;border:1px solid #1e3040;border-radius:12px;overflow:hidden">
@@ -1838,7 +1869,7 @@
         const points = scored ? scored.points : 0;
         const valid  = scored ? scored.valid  : true;
 
-        const col = p.team === "blue" ? "rgba(74,163,255,0.95)" : "rgba(255,91,91,0.95)";
+        const col = p.team === "blue" ? "rgba(74,163,255,0.5)" : "rgba(255,91,91,0.5)";
 
         // Use the same effective radius the collision check used so the
         // drawn circle is always honest about what was tested.
@@ -1846,25 +1877,32 @@
           ? scored.effR * devicePixelRatio
           : effectivePuckRadius(p.x, p.y) * devicePixelRatio;
 
+        const cx = p.x * devicePixelRatio;
+        const cy = p.y * devicePixelRatio;
+
         ctx.save();
         ctx.strokeStyle = col;
-        ctx.lineWidth = 3*devicePixelRatio;
+        ctx.lineWidth = 2*devicePixelRatio;
         ctx.beginPath();
-        ctx.arc(p.x*devicePixelRatio, p.y*devicePixelRatio, effR, 0, Math.PI*2);
+        ctx.arc(cx, cy, effR, 0, Math.PI*2);
         ctx.stroke();
 
-        // Label
+        // Centered label inside the puck
         const label = (scored ? `${points}` : p.team.toUpperCase());
-        ctx.font = `${13*devicePixelRatio}px system-ui`;
-        const tx = p.x*devicePixelRatio + effR + 5*devicePixelRatio;
-        const ty = p.y*devicePixelRatio;
-
-        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        const fontSize = Math.max(16, Math.min(24, effR * 1.05 / devicePixelRatio));
+        ctx.font = `bold ${fontSize*devicePixelRatio}px system-ui`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
         const m = ctx.measureText(label);
-        ctx.fillRect(tx-3*devicePixelRatio, ty-12*devicePixelRatio, m.width+6*devicePixelRatio, 16*devicePixelRatio);
-
-        ctx.fillStyle = valid ? col : "rgba(255,255,255,0.9)";
-        ctx.fillText(label, tx, ty);
+        const pad = 3 * devicePixelRatio;
+        const bgW = m.width + pad * 2;
+        const bgH = fontSize * devicePixelRatio + pad * 2;
+        ctx.fillStyle = "rgba(0,0,0,0.75)";
+        ctx.beginPath();
+        ctx.roundRect(cx - bgW/2, cy - bgH/2, bgW, bgH, 4*devicePixelRatio);
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(label, cx, cy);
         ctx.restore();
       }
     }
