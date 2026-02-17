@@ -2,7 +2,7 @@
 // Direct detection of red/blue puck plastic (no stickers needed!)
 
 (() => {
-  const BUILD = "v2.5";
+  const BUILD = "v2.6";
   
   const $ = (sel) => document.querySelector(sel);
   const video = $("#video");
@@ -720,21 +720,27 @@
     }
     
     if (mode === "game_setup") {
-      const gp = State.game?._setupPoints ?? 75;
-      const gr = State.game?._setupRounds ?? 5;
+      const goalType   = State._setupGoalType   ?? "points";
+      const goalPoints = State._setupGoalPoints  ?? 75;
+      const goalRounds = State._setupGoalRounds  ?? 5;
+      const ptActive = goalType === "points";
       return `
         <h3>New Game</h3>
-        <div class="hint">Game ends when <b>either</b> goal is reached first.</div>
+        <div class="row" style="gap:0;margin-bottom:4px">
+          <button id="btnGoalPoints" class="btn grow${ptActive ? " primary" : ""}" style="border-radius:8px 0 0 8px;border-right:none">Points</button>
+          <button id="btnGoalRounds" class="btn grow${!ptActive ? " primary" : ""}" style="border-radius:0 8px 8px 0">Rounds</button>
+        </div>
+        ${ptActive ? `
         <div class="row">
           <label>Point goal</label>
-          <div class="grow"><input id="goalPoints" type="range" min="0" max="150" step="5" value="${gp}" /></div>
-          <div class="badge" id="goalPointsBadge">${gp === 0 ? "off" : gp + " pts"}</div>
-        </div>
+          <div class="grow"><input id="goalPoints" type="range" min="5" max="150" step="5" value="${goalPoints}" /></div>
+          <div class="badge" id="goalPointsBadge">${goalPoints} pts</div>
+        </div>` : `
         <div class="row">
           <label>Round goal</label>
-          <div class="grow"><input id="goalRounds" type="range" min="0" max="10" step="1" value="${gr}" /></div>
-          <div class="badge" id="goalRoundsBadge">${gr === 0 ? "off" : gr + " rnds"}</div>
-        </div>
+          <div class="grow"><input id="goalRounds" type="range" min="1" max="10" step="1" value="${goalRounds}" /></div>
+          <div class="badge" id="goalRoundsBadge">${goalRounds} rnds</div>
+        </div>`}
         <div class="row">
           <button class="btn grow" id="btnCancelGame">Cancel</button>
           <button class="btn primary grow" id="btnBeginGame">Begin</button>
@@ -836,21 +842,32 @@
     const btnHistory = $("#btnHistory");
     if (btnHistory) btnHistory.onclick = () => showHistoryPopup();
 
+    const btnGoalPoints = $("#btnGoalPoints");
+    if (btnGoalPoints) btnGoalPoints.onclick = () => {
+      State._setupGoalType = "points";
+      render();
+    };
+    const btnGoalRounds = $("#btnGoalRounds");
+    if (btnGoalRounds) btnGoalRounds.onclick = () => {
+      State._setupGoalType = "rounds";
+      render();
+    };
+
     // Game setup sliders
     const gpEl = $("#goalPoints");
     if (gpEl) {
       gpEl.oninput = (e) => {
-        const v = Number(e.target.value);
+        State._setupGoalPoints = Number(e.target.value);
         const b = $("#goalPointsBadge");
-        if (b) b.textContent = v === 0 ? "off" : v + " pts";
+        if (b) b.textContent = e.target.value + " pts";
       };
     }
     const grEl = $("#goalRounds");
     if (grEl) {
       grEl.oninput = (e) => {
-        const v = Number(e.target.value);
+        State._setupGoalRounds = Number(e.target.value);
         const b = $("#goalRoundsBadge");
-        if (b) b.textContent = v === 0 ? "off" : v + " rnds";
+        if (b) b.textContent = e.target.value + " rnds";
       };
     }
     
@@ -859,12 +876,14 @@
     
     const btnBegin = $("#btnBeginGame");
     if (btnBegin) btnBegin.onclick = () => {
-      const goalPoints = Number($("#goalPoints")?.value ?? 75);
-      const goalRounds = Number($("#goalRounds")?.value ?? 5);
+      const goalType   = State._setupGoalType   ?? "points";
+      const goalPoints = goalType === "points" ? (State._setupGoalPoints ?? 75) : 0;
+      const goalRounds = goalType === "rounds" ? (State._setupGoalRounds ?? 5)  : 0;
       State.game = {
         id: Date.now(),
-        goalPoints: goalPoints,
-        goalRounds: goalRounds,
+        goalType,
+        goalPoints,
+        goalRounds,
         rounds: [],
         totals: { red:0, blue:0 },
         startedAt: Date.now(),
@@ -890,8 +909,9 @@
     const btnEnd = $("#btnEndGame");
     if (btnEnd) btnEnd.onclick = () => {
       if (!State.game) return;
+      if (!confirm("End game early? This will save it to history.")) return;
       if (!State.game.ended) {
-        State.game.ended  = true;
+        State.game.ended   = true;
         State.game.endedAt = Date.now();
         saveToHistory(State.game);
       }
@@ -927,9 +947,9 @@
     redTotalEl.textContent = String(g.totals.red);
 
     const goalParts = [];
-    if (g.goalPoints > 0) goalParts.push(g.goalPoints + " pts");
-    if (g.goalRounds > 0) goalParts.push(g.goalRounds + " rnds");
-    const goalStr = goalParts.length ? goalParts.join(" or ") : "no limit";
+    if (g.goalType === "points" && g.goalPoints > 0) goalParts.push(g.goalPoints + " pts");
+    if (g.goalType === "rounds" && g.goalRounds > 0) goalParts.push(g.goalRounds + " rnds");
+    const goalStr = goalParts.length ? goalParts.join(" · ") : "no limit";
     gameSummaryEl.textContent = (g.ended ? "Ended" : "In progress") + " • " + goalStr;
 
     roundGridBody.innerHTML = "";
@@ -950,8 +970,8 @@
 
     if (!g.ended) {
       let over = false;
-      if (g.goalPoints > 0 && (g.totals.blue >= g.goalPoints || g.totals.red >= g.goalPoints)) over = true;
-      if (g.goalRounds > 0 && g.rounds.length >= g.goalRounds) over = true;
+      if (g.goalType === "points" && g.goalPoints > 0 && (g.totals.blue >= g.goalPoints || g.totals.red >= g.goalPoints)) over = true;
+      if (g.goalType === "rounds" && g.goalRounds > 0 && g.rounds.length >= g.goalRounds) over = true;
       if (over) {
         g.ended = true;
         g.endedAt = Date.now();
@@ -1036,56 +1056,119 @@
   }
 
   function showScoreAnimation(round, roundNum) {
+    const g = State.game;
+    const blueTotal = g ? g.totals.blue : 0;
+    const redTotal  = g ? g.totals.red  : 0;
+
+    // Remaining-goal string
+    let remainStr = "";
+    if (g) {
+      if (g.goalType === "points") {
+        const leader = Math.max(blueTotal, redTotal);
+        const rem    = Math.max(0, g.goalPoints - leader);
+        remainStr = rem === 0 ? "🏆 Goal reached!" : `${rem} pts to go`;
+      } else {
+        const rem = Math.max(0, g.goalRounds - roundNum);
+        remainStr = rem === 0 ? "🏆 Final round!" : `${rem} round${rem !== 1 ? "s" : ""} remaining`;
+      }
+    }
+
+    const img = round.screenshot
+      ? `<img src="${round.screenshot}" style="width:100%;border-radius:12px;display:block;margin-bottom:18px;max-height:240px;object-fit:cover;" />`
+      : "";
+
     const modal = makeModal(`
       <div id="scoreAnim" style="
-        background:#121a22; border:1px solid #223140; border-radius:18px;
-        padding:32px 40px; text-align:center; min-width:280px; max-width:400px;
+        background:#0b1520; border:1px solid #223140; border-radius:20px;
+        padding:24px 28px; text-align:center; width:min(92vw,480px);
         font-family:-apple-system,system-ui,sans-serif; color:#e7eef7;
       ">
-        <div style="font-size:13px;color:#9fb0c2;margin-bottom:8px;">ROUND ${roundNum}</div>
-        <div style="display:flex;gap:32px;justify-content:center;align-items:flex-end;margin:16px 0 24px">
-          <div>
-            <div style="font-size:13px;color:#4aa3ff;margin-bottom:6px;">BLUE</div>
-            <div id="animBlue" style="font-size:52px;font-weight:800;color:#4aa3ff;line-height:1">0</div>
+        <div style="font-size:11px;letter-spacing:1px;color:#9fb0c2;margin-bottom:14px;text-transform:uppercase">Round ${roundNum}</div>
+        ${img}
+
+        <!-- Round scores -->
+        <div style="display:flex;gap:0;justify-content:center;align-items:stretch;margin-bottom:6px;border:1px solid #1e3040;border-radius:12px;overflow:hidden">
+          <div style="flex:1;padding:14px 0;background:#0d1f31">
+            <div style="font-size:10px;letter-spacing:1px;color:#4aa3ff;margin-bottom:4px">BLUE</div>
+            <div id="animBlue" style="font-size:48px;font-weight:900;color:#4aa3ff;line-height:1;transition:transform .15s">0</div>
           </div>
-          <div style="font-size:36px;color:#9fb0c2;padding-bottom:4px">vs</div>
-          <div>
-            <div style="font-size:13px;color:#ff5b5b;margin-bottom:6px;">RED</div>
-            <div id="animRed" style="font-size:52px;font-weight:800;color:#ff5b5b;line-height:1">0</div>
+          <div style="width:1px;background:#1e3040"></div>
+          <div style="flex:1;padding:14px 0;background:#0d1f31">
+            <div style="font-size:10px;letter-spacing:1px;color:#ff5b5b;margin-bottom:4px">RED</div>
+            <div id="animRed" style="font-size:48px;font-weight:900;color:#ff5b5b;line-height:1;transition:transform .15s">0</div>
           </div>
         </div>
-        <div id="animTotals" style="font-size:13px;color:#9fb0c2;margin-bottom:20px;min-height:18px"></div>
-        <button id="animClose" style="
-          background:#1d3552;border:1px solid #2b4b74;color:#e7eef7;
-          padding:10px 28px;border-radius:10px;font-size:15px;cursor:pointer;
-        ">Continue</button>
+
+        <!-- Running totals — appear after count-up -->
+        <div id="totalsBlock" style="opacity:0;transition:opacity .4s;margin-bottom:6px;border:1px solid #1e3040;border-radius:12px;overflow:hidden">
+          <div style="display:flex;gap:0;align-items:stretch">
+            <div style="flex:1;padding:10px 0;background:#071220">
+              <div style="font-size:9px;letter-spacing:1px;color:#4aa3ff;margin-bottom:2px">TOTAL</div>
+              <div id="animBlueTotal" style="font-size:64px;font-weight:900;color:#4aa3ff;line-height:1">0</div>
+            </div>
+            <div style="width:1px;background:#1e3040"></div>
+            <div style="flex:1;padding:10px 0;background:#071220">
+              <div style="font-size:9px;letter-spacing:1px;color:#ff5b5b;margin-bottom:2px">TOTAL</div>
+              <div id="animRedTotal" style="font-size:64px;font-weight:900;color:#ff5b5b;line-height:1">0</div>
+            </div>
+          </div>
+          <div id="remainLine" style="padding:8px;font-size:14px;font-weight:700;color:#fbbf24;background:#0e1c2c;letter-spacing:.5px"></div>
+        </div>
+
+        <div style="font-size:11px;color:#4a5a6a;margin-top:12px">Tap anywhere to continue</div>
       </div>
     `);
 
-    const animBlueEl = modal.querySelector("#animBlue");
-    const animRedEl  = modal.querySelector("#animRed");
-    const totalsEl   = modal.querySelector("#animTotals");
-    modal.querySelector("#animClose").onclick = () => modal.remove();
+    // Dismiss on tap anywhere (backdrop or card)
+    modal.addEventListener("click", () => modal.remove());
 
-    // Count up animation
-    const duration = 900;
-    const start    = performance.now();
-    function tick(now) {
-      const t = Math.min(1, (now - start) / duration);
+    const animBlueEl      = modal.querySelector("#animBlue");
+    const animRedEl       = modal.querySelector("#animRed");
+    const totalsBlock     = modal.querySelector("#totalsBlock");
+    const animBlueTotalEl = modal.querySelector("#animBlueTotal");
+    const animRedTotalEl  = modal.querySelector("#animRedTotal");
+    const remainLineEl    = modal.querySelector("#remainLine");
+
+    // Phase 1: count up round scores (0 → round.blue / round.red)
+    const phase1Dur = 800;
+    const phase1Start = performance.now();
+
+    function phase1(now) {
+      const t    = Math.min(1, (now - phase1Start) / phase1Dur);
       const ease = 1 - Math.pow(1 - t, 3);
       animBlueEl.textContent = Math.round(ease * round.blue);
       animRedEl.textContent  = Math.round(ease * round.red);
-      if (t < 1) {
-        requestAnimationFrame(tick);
-      } else {
-        animBlueEl.textContent = round.blue;
-        animRedEl.textContent  = round.red;
-        if (State.game) {
-          totalsEl.textContent = `Totals: Blue ${State.game.totals.blue} — Red ${State.game.totals.red}`;
+      if (t < 1) { requestAnimationFrame(phase1); return; }
+
+      // Settle
+      animBlueEl.textContent = round.blue;
+      animRedEl.textContent  = round.red;
+
+      // Phase 2: fade in totals block then count up totals
+      setTimeout(() => {
+        totalsBlock.style.opacity = "1";
+        animBlueTotalEl.textContent = "0";
+        animRedTotalEl.textContent  = "0";
+        remainLineEl.textContent    = remainStr;
+
+        const phase2Dur   = 900;
+        const phase2Start = performance.now();
+
+        function phase2(now2) {
+          const t2   = Math.min(1, (now2 - phase2Start) / phase2Dur);
+          const ease2 = 1 - Math.pow(1 - t2, 4); // snappier ease
+          animBlueTotalEl.textContent = Math.round(ease2 * blueTotal);
+          animRedTotalEl.textContent  = Math.round(ease2 * redTotal);
+          if (t2 < 1) { requestAnimationFrame(phase2); }
+          else {
+            animBlueTotalEl.textContent = blueTotal;
+            animRedTotalEl.textContent  = redTotal;
+          }
         }
-      }
+        requestAnimationFrame(phase2);
+      }, 250);
     }
-    requestAnimationFrame(tick);
+    requestAnimationFrame(phase1);
   }
 
   function showRoundPopup(round, roundNum) {
@@ -1097,9 +1180,9 @@
         background:#121a22;border:1px solid #223140;border-radius:18px;
         padding:24px;max-width:640px;width:100%;font-family:-apple-system,system-ui,sans-serif;color:#e7eef7;
       ">
-        <div style="font-size:13px;color:#9fb0c2;margin-bottom:12px;">ROUND ${roundNum}</div>
+        <div style="font-size:13px;color:#9fb0c2;margin-bottom:12px;text-transform:uppercase;letter-spacing:1px">Round ${roundNum}</div>
         ${img}
-        <div style="display:flex;gap:24px;justify-content:center;margin-bottom:16px">
+        <div style="display:flex;gap:24px;justify-content:center;margin-bottom:12px">
           <div style="text-align:center">
             <div style="font-size:11px;color:#4aa3ff">BLUE</div>
             <div style="font-size:36px;font-weight:800;color:#4aa3ff">${round.blue}</div>
@@ -1109,12 +1192,7 @@
             <div style="font-size:36px;font-weight:800;color:#ff5b5b">${round.red}</div>
           </div>
         </div>
-        <div style="text-align:center">
-          <button onclick="this.closest('[style]').parentNode.remove()" style="
-            background:#1d3552;border:1px solid #2b4b74;color:#e7eef7;
-            padding:8px 24px;border-radius:10px;font-size:14px;cursor:pointer;
-          ">Close</button>
-        </div>
+        <div style="font-size:11px;color:#4a5a6a;text-align:center">Tap outside to close</div>
       </div>
     `);
   }
@@ -1173,15 +1251,12 @@
           <img id="bigShot" style="max-width:100%;max-height:90vh;border-radius:10px" />
         </div>
         <div style="text-align:center;display:flex;gap:12px;justify-content:center">
-          <button onclick="this.closest('[style]').parentNode.remove()" style="
-            background:#1d3552;border:1px solid #2b4b74;color:#e7eef7;
-            padding:10px 28px;border-radius:10px;font-size:15px;cursor:pointer
-          ">Close</button>
           <button id="btnNewGameFromWinner" style="
             background:#234a22;border:1px solid #36d399;color:#baf7dd;
             padding:10px 28px;border-radius:10px;font-size:15px;cursor:pointer
           ">New Game</button>
         </div>
+        <div style="font-size:11px;color:#4a5a6a;text-align:center;margin-top:12px">Tap outside to close</div>
       </div>
     `);
 
@@ -1198,8 +1273,8 @@
     const hist = loadHistory();
     if (!hist.length) {
       makeModal(`<div style="background:#121a22;border:1px solid #223140;border-radius:18px;padding:32px;color:#e7eef7;font-family:-apple-system,system-ui,sans-serif;text-align:center;min-width:240px">
-        <div style="color:#9fb0c2;margin-bottom:16px">No completed games yet.</div>
-        <button onclick="this.closest('[style]').parentNode.remove()" style="background:#1d3552;border:1px solid #2b4b74;color:#e7eef7;padding:8px 20px;border-radius:8px;cursor:pointer">Close</button>
+        <div style="color:#9fb0c2;margin-bottom:8px">No completed games yet.</div>
+        <div style="font-size:11px;color:#4a5a6a">Tap outside to close</div>
       </div>`);
       return;
     }
@@ -1233,16 +1308,13 @@
           </thead>
           <tbody id="histBody">${rows}</tbody>
         </table>
-        <div style="text-align:center;margin-top:20px">
-          <button onclick="this.closest('[style]').parentNode.remove()" style="
-            background:#1d3552;border:1px solid #2b4b74;color:#e7eef7;
-            padding:8px 24px;border-radius:10px;font-size:14px;cursor:pointer">Close</button>
-        </div>
+        <div style="font-size:11px;color:#4a5a6a;text-align:center;margin-top:16px">Tap outside to close · Tap a row for details</div>
       </div>
     `);
 
     modal.querySelectorAll(".hist-row").forEach(row => {
-      row.addEventListener("click", () => {
+      row.addEventListener("click", (e) => {
+        e.stopPropagation();
         modal.remove();
         showWinnerPopup(hist[Number(row.dataset.idx)]);
       });
