@@ -93,6 +93,10 @@ video,canvas{
   position:absolute; left:0; top:0;
   width:100%; height:100%;
 }
+video {
+  object-fit: contain;   /* letterbox to preserve aspect ratio */
+  background: #000;
+}
 .hidden{ display:none; }
 
 .panel{

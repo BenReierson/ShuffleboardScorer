@@ -2,7 +2,7 @@
 // Direct detection of red/blue puck plastic (no stickers needed!)
 
 (() => {
-  const BUILD = "v2-simplified";
+  const BUILD = "v2b";
   
   const $ = (sel) => document.querySelector(sel);
   const video = $("#video");
@@ -127,6 +127,45 @@
   }
   window.addEventListener("resize", resizeCanvases);
   
+  // ========== VIDEO COORDINATE MAPPING ==========
+  //
+  // Problem: video renders with object-fit:contain inside the canvas element,
+  // creating letterbox bars.  drawImage(video, 0,0, W,H) STRETCHES the frame
+  // to fill the canvas, so canvas pixels ≠ display pixels except at the center.
+  // This causes puck circles to drift toward the edges.
+  //
+  // Fix: compute the same letterbox rect the browser uses, and draw the video
+  // frame into the work canvas at that rect.  Then canvas pixel (cx,cy) always
+  // corresponds to the same visual position in the overlay.
+  //
+  // Returns dimensions in CANVAS PHYSICAL PIXELS (not CSS pixels).
+  function getVideoRect() {
+    const vW = video.videoWidth  || overlay.width  / devicePixelRatio;
+    const vH = video.videoHeight || overlay.height / devicePixelRatio;
+    const cW = overlay.width;   // physical pixels
+    const cH = overlay.height;
+
+    const vAR = vW / vH;
+    const cAR = cW / cH;
+
+    let dW, dH, dX, dY;
+    if (vAR > cAR) {
+      // Video wider than canvas — bars on top and bottom
+      dW = cW;
+      dH = Math.round(cW / vAR);
+      dX = 0;
+      dY = Math.round((cH - dH) / 2);
+    } else {
+      // Video taller than canvas (or same) — bars on left and right
+      dH = cH;
+      dW = Math.round(cH * vAR);
+      dX = Math.round((cW - dW) / 2);
+      dY = 0;
+    }
+
+    return { x: dX, y: dY, w: dW, h: dH };
+  }
+
   // ========== GEOMETRY ==========
   const dist = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -200,9 +239,14 @@
   function detectPucks() {
     const W = overlay.width;
     const H = overlay.height;
-    
-    // Draw video frame
-    wctx.drawImage(video, 0, 0, W, H);
+
+    // Draw video into work canvas using the SAME letterbox geometry the
+    // browser uses when rendering the <video> element.  Without this, a
+    // 4:3 video in a non-4:3 container produces a coordinate warp that is
+    // zero at the center but grows toward the edges.
+    const vr = getVideoRect();
+    wctx.clearRect(0, 0, W, H);
+    wctx.drawImage(video, vr.x, vr.y, vr.w, vr.h);
     const imageData = wctx.getImageData(0, 0, W, H);
     const data = imageData.data;
     
@@ -832,11 +876,23 @@
   function drawOverlay() {
     const W = overlay.width, H = overlay.height;
     ctx.clearRect(0,0,W,H);
-    
+
+    // Letterbox bars: fill areas outside the video content with opaque black
+    // so the user can't accidentally place calibration handles there.
+    const vr = getVideoRect();
+    ctx.save();
+    ctx.fillStyle = "#000";
+    if (vr.y > 0)          ctx.fillRect(0,    0,    W,    vr.y);
+    if (vr.y+vr.h < H)     ctx.fillRect(0,    vr.y+vr.h, W, H-(vr.y+vr.h));
+    if (vr.x > 0)          ctx.fillRect(0,    vr.y,  vr.x,   vr.h);
+    if (vr.x+vr.w < W)     ctx.fillRect(vr.x+vr.w, vr.y, W-(vr.x+vr.w), vr.h);
+    ctx.restore();
+
+    // Subtle darkening over the video area for readability
     ctx.save();
     ctx.globalAlpha = 0.1;
     ctx.fillStyle = "#000";
-    ctx.fillRect(0,0,W,H);
+    ctx.fillRect(vr.x, vr.y, vr.w, vr.h);
     ctx.restore();
     
     const cfg = State.config;
@@ -1027,7 +1083,10 @@
   // ========== COLOR SAMPLING ==========
   function sampleColorAt(pos, team) {
     const W = overlay.width, H = overlay.height;
-    wctx.drawImage(video, 0, 0, W, H);
+    // Use the same letterbox draw as detection so sampled pixel coords match
+    const vr = getVideoRect();
+    wctx.clearRect(0, 0, W, H);
+    wctx.drawImage(video, vr.x, vr.y, vr.w, vr.h);
     
     // Sample 5x5 area to get better average
     let hSum = 0, sSum = 0, vSum = 0, count = 0;
