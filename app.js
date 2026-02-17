@@ -2,7 +2,7 @@
 // Direct detection of red/blue puck plastic (no stickers needed!)
 
 (() => {
-  const BUILD = "v2c";
+  const BUILD = "v2d";
   
   const $ = (sel) => document.querySelector(sel);
   const video = $("#video");
@@ -78,8 +78,15 @@
       // from the frame centre to the frame corner.
       // k = 0  → no correction (circle stays constant everywhere)
       // k = 0.4 → radius at the corner is 60% of the centre radius
+      //
+      // p = position pull-in coefficient.
+      // Barrel distortion bows puck positions outward from centre.
+      // corrected = centre + (raw - centre) * (1 - p * r²)
+      // p = 0   → no position correction
+      // p = 0.3 → a puck at the corner is pulled 30% back toward centre
       distortion: {
-        k: 0.0,   // radial shrink coefficient  (tune in calibration)
+        k: 0.0,   // radial radius-shrink coefficient
+        p: 0.0,   // radial position pull-in coefficient
       },
     };
   }
@@ -222,31 +229,42 @@
   }
   
   // ========== DISTORTION CORRECTION ==========
-  // Returns the effective collision radius (in CSS-pixel / config space) for
-  // a puck at position (px, py).  Puck positions are in the same unscaled
-  // coordinate space as config.tri / config.lines (i.e. CSS pixels, NOT
-  // multiplied by devicePixelRatio).
-  //
-  // The radial falloff model:  effectiveR = puckRadius * (1 - k * r²)
-  //   r  = distance from frame centre / distance from centre to nearest corner
-  //        clamped to [0, 1] so pucks exactly at the corner get full shrink.
-  //
-  // Visual: the drawn circle on the overlay uses this same radius so what you
-  // see is exactly what the collision check uses.
-  function effectivePuckRadius(px, py) {
-    const { puckRadius, distortion } = State.config;
-    const k = distortion ? distortion.k : 0;
-    if (!k) return puckRadius;
-
-    // Frame centre and max-corner distance in CSS-pixel space
+  // Shared helper: returns frame centre and normalised radial distance r ∈ [0,1]
+  // for a point (px, py) in CSS-pixel space.
+  function radialParams(px, py) {
     const cW = overlay.width  / devicePixelRatio;
     const cH = overlay.height / devicePixelRatio;
     const cx = cW / 2;
     const cy = cH / 2;
-    const maxDist = Math.hypot(cx, cy);  // centre → corner
+    const maxDist = Math.hypot(cx, cy);   // centre → corner
+    const dx = px - cx;
+    const dy = py - cy;
+    const r  = Math.min(1, Math.hypot(dx, dy) / maxDist);
+    return { cx, cy, dx, dy, r };
+  }
 
-    const r = Math.min(1, Math.hypot(px - cx, py - cy) / maxDist);
+  // Returns the effective collision radius (CSS px) for a puck at (px, py).
+  // effectiveR = puckRadius * (1 - k * r²)
+  function effectivePuckRadius(px, py) {
+    const { puckRadius, distortion } = State.config;
+    const k = distortion ? distortion.k : 0;
+    if (!k) return puckRadius;
+    const { r } = radialParams(px, py);
     return Math.max(4, puckRadius * (1 - k * r * r));
+  }
+
+  // Returns the lens-corrected position for a detected puck centre.
+  // Barrel distortion pushes points outward; we pull them back in:
+  //   corrected = centre + (raw - centre) * (1 - p * r²)
+  // At the frame centre r=0 so nothing moves.
+  // At the corners r≈1 so the point is pulled p*r² of the way back to centre.
+  function correctPuckPosition(px, py) {
+    const { distortion } = State.config;
+    const p = distortion ? distortion.p : 0;
+    if (!p) return { x: px, y: py };
+    const { cx, cy, dx, dy, r } = radialParams(px, py);
+    const scale = 1 - p * r * r;
+    return { x: cx + dx * scale, y: cy + dy * scale };
   }
   function rgbToHsv(r,g,b){
     r/=255; g/=255; b/=255;
@@ -445,13 +463,20 @@
         if (ar < 0.5 || ar > 2.0) return false;
         
         return true;
-      }).map(b => ({
-        team: b.team,
-        x: b.x,
-        y: b.y,
-        radius: State.config.puckRadius,
-        _debug: { area: b.area, circ: b.circularity.toFixed(2) }
-      })).sort((a,b) => b._debug.area - a._debug.area).slice(0, 8);
+      }).map(b => {
+        // Apply radial position correction before anything else uses the coords.
+        // Both the overlay circle and the collision check will use corrected x,y.
+        const corrected = correctPuckPosition(b.x, b.y);
+        return {
+          team: b.team,
+          x: corrected.x,
+          y: corrected.y,
+          _rawX: b.x,   // keep for debug
+          _rawY: b.y,
+          radius: State.config.puckRadius,
+          _debug: { area: b.area, circ: b.circularity.toFixed(2) }
+        };
+      }).sort((a,b) => b._debug.area - a._debug.area).slice(0, 8);
     }
     
     const redPucks = filterBlobs(redBlobs);
@@ -610,14 +635,20 @@
         </div>
         <div class="sep"></div>
         <div class="hint"><b>Lens distortion correction</b><br/>
-          Pucks near the edges appear smaller to the camera.
-          Increase <b>Edge shrink</b> until edge pucks stop falsely touching lines.
-          The drawn circle shows the actual collision zone — it will visibly shrink toward the corners.
+          Pucks near the edges appear smaller <em>and</em> shifted outward by the camera.<br/>
+          <b>Edge shrink</b> shrinks the collision radius toward the edges.<br/>
+          <b>Position pull-in</b> nudges detected centres back toward the frame centre.<br/>
+          The drawn circle shows exactly where the collision check thinks the puck is.
         </div>
         <div class="row">
           <label>Edge shrink (k)</label>
           <div class="grow"><input id="distortionK" type="range" min="0" max="0.7" step="0.02" value="${k.toFixed(2)}" /></div>
           <div class="badge" id="distortionKBadge">${(k * 100).toFixed(0)}%</div>
+        </div>
+        <div class="row">
+          <label>Position pull-in (p)</label>
+          <div class="grow"><input id="distortionP" type="range" min="0" max="0.5" step="0.01" value="${(cfg.distortion?.p ?? 0).toFixed(2)}" /></div>
+          <div class="badge" id="distortionPBadge">${((cfg.distortion?.p ?? 0) * 100).toFixed(0)}%</div>
         </div>
         <div class="sep"></div>
         <div class="hint"><b>Color fine-tuning</b> (if detection isn't working)</div>
@@ -665,6 +696,11 @@
           <label>Edge shrink (k)</label>
           <div class="grow"><input id="distortionK" type="range" min="0" max="0.7" step="0.02" value="${k.toFixed(2)}" /></div>
           <div class="badge" id="distortionKBadge">${(k * 100).toFixed(0)}%</div>
+        </div>
+        <div class="row">
+          <label>Position pull-in (p)</label>
+          <div class="grow"><input id="distortionP" type="range" min="0" max="0.5" step="0.01" value="${(cfg.distortion?.p ?? 0).toFixed(2)}" /></div>
+          <div class="badge" id="distortionPBadge">${((cfg.distortion?.p ?? 0) * 100).toFixed(0)}%</div>
         </div>
         ${common}
         <div class="sep"></div>
@@ -742,10 +778,19 @@
 
     const dkEl = $("#distortionK");
     if (dkEl) dkEl.oninput = (e) => {
-      if (!State.config.distortion) State.config.distortion = { k: 0 };
+      if (!State.config.distortion) State.config.distortion = { k: 0, p: 0 };
       State.config.distortion.k = Number(e.target.value);
       const badge = $("#distortionKBadge");
       if (badge) badge.textContent = (State.config.distortion.k * 100).toFixed(0) + "%";
+      saveConfig();
+    };
+
+    const dpEl = $("#distortionP");
+    if (dpEl) dpEl.oninput = (e) => {
+      if (!State.config.distortion) State.config.distortion = { k: 0, p: 0 };
+      State.config.distortion.p = Number(e.target.value);
+      const badge = $("#distortionPBadge");
+      if (badge) badge.textContent = (State.config.distortion.p * 100).toFixed(0) + "%";
       saveConfig();
     };
     
@@ -1019,28 +1064,49 @@
       }
       
       if (State.mode === "calibrate_colors") {
-        // Draw radius preview circles at centre and at each corner so the
-        // user can see how the distortion correction is shrinking the radius.
-        const previewPoints = [
-          { x: W * 0.5,  y: H * 0.5 },   // centre
+        // Show 5 ghost circles: one at centre, one near each corner.
+        // Each circle is drawn at the CORRECTED position with the EFFECTIVE radius
+        // so the user can see both distortion parameters working together.
+        // An arrow from the raw position to the corrected position shows the pull-in.
+        const rawPoints = [
+          { x: W * 0.5,  y: H * 0.5  },   // centre
           { x: W * 0.15, y: H * 0.15 },   // top-left
           { x: W * 0.85, y: H * 0.15 },   // top-right
           { x: W * 0.15, y: H * 0.85 },   // bottom-left
           { x: W * 0.85, y: H * 0.85 },   // bottom-right
         ];
 
-        for (const pt of previewPoints) {
-          const cssX = pt.x / devicePixelRatio;
-          const cssY = pt.y / devicePixelRatio;
-          const effR = effectivePuckRadius(cssX, cssY) * devicePixelRatio;
+        for (const pt of rawPoints) {
+          const cssRawX = pt.x / devicePixelRatio;
+          const cssRawY = pt.y / devicePixelRatio;
+          const corrected = correctPuckPosition(cssRawX, cssRawY);
+          const corrX = corrected.x * devicePixelRatio;
+          const corrY = corrected.y * devicePixelRatio;
+          const effR  = effectivePuckRadius(cssRawX, cssRawY) * devicePixelRatio;
 
+          // Draw corrected-position circle
           ctx.save();
-          ctx.strokeStyle = "rgba(74,163,255,0.55)";
+          ctx.strokeStyle = "rgba(74,163,255,0.6)";
           ctx.lineWidth = 2 * devicePixelRatio;
           ctx.setLineDash([5*devicePixelRatio, 5*devicePixelRatio]);
           ctx.beginPath();
-          ctx.arc(pt.x, pt.y, effR, 0, Math.PI*2);
+          ctx.arc(corrX, corrY, effR, 0, Math.PI * 2);
           ctx.stroke();
+
+          // Draw small dot at raw position and line to corrected position
+          if (corrX !== pt.x || corrY !== pt.y) {
+            ctx.setLineDash([]);
+            ctx.strokeStyle = "rgba(251,191,36,0.7)";
+            ctx.lineWidth = 1.5 * devicePixelRatio;
+            ctx.beginPath();
+            ctx.moveTo(pt.x, pt.y);
+            ctx.lineTo(corrX, corrY);
+            ctx.stroke();
+            ctx.fillStyle = "rgba(251,191,36,0.9)";
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, 3 * devicePixelRatio, 0, Math.PI * 2);
+            ctx.fill();
+          }
           ctx.restore();
         }
       }
