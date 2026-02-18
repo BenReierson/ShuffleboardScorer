@@ -2,7 +2,7 @@
 // Direct detection of red/blue puck plastic (no stickers needed!)
 
 (() => {
-  const BUILD = "v2.7";
+  const BUILD = "v2.8";
   
   const $ = (sel) => document.querySelector(sel);
   const video = $("#video");
@@ -31,8 +31,13 @@
     return audioCtx;
   }
 
+  let soundEnabled = true;
+  const chkSfx = $("#chkSfx");
+  if (chkSfx) chkSfx.addEventListener("change", () => { soundEnabled = chkSfx.checked; });
+
   // Short pitched tick — freq escalates as progress goes from 0→1
   function playTick(progress) {
+    if (!soundEnabled) return;
     try {
       const ctx = getAudioCtx();
       const freq = 300 + progress * 900; // 300 Hz → 1200 Hz
@@ -51,6 +56,7 @@
 
   // Celebratory fanfare for win popup
   function playWinFanfare() {
+    if (!soundEnabled) return;
     try {
       const ctx = getAudioCtx();
       const notes = [523, 659, 784, 1047]; // C5, E5, G5, C6
@@ -83,6 +89,144 @@
         osc.stop(shimmerTime + 1.2);
       });
     } catch {}
+  }
+
+  // Sad descending tone for zero or negative round score
+  function playSadSound() {
+    if (!soundEnabled) return;
+    try {
+      const ctx = getAudioCtx();
+      const notes = [392, 330, 262, 196]; // G4, E4, C4, G3 — descending
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        const t = ctx.currentTime + i * 0.18;
+        gain.gain.setValueAtTime(0.15, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.4);
+      });
+    } catch {}
+  }
+
+  // Happy double-ding for round score > 10
+  function playHappyDing() {
+    if (!soundEnabled) return;
+    try {
+      const ctx = getAudioCtx();
+      [0, 0.15].forEach((delay) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "triangle";
+        osc.frequency.value = 1047; // C6
+        const t = ctx.currentTime + delay;
+        gain.gain.setValueAtTime(0.2, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.5);
+      });
+    } catch {}
+  }
+
+  // Extra flourish for round score > 20: ding ding + rising sparkle
+  function playHappyDingFlourish() {
+    if (!soundEnabled) return;
+    try {
+      const ctx = getAudioCtx();
+      // Double ding
+      [0, 0.15].forEach((delay) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "triangle";
+        osc.frequency.value = 1047; // C6
+        const t = ctx.currentTime + delay;
+        gain.gain.setValueAtTime(0.2, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.5);
+      });
+      // Rising sparkle arpeggio
+      const sparkle = [1319, 1568, 1760, 2093]; // E6, G6, A6, C7
+      sparkle.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        const t = ctx.currentTime + 0.35 + i * 0.09;
+        gain.gain.setValueAtTime(0.14, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.6);
+      });
+    } catch {}
+  }
+
+  // Individual puck sounds: bad (-10 or 0), neutral (7 or 8), happy (10)
+  function playBadPuck() {
+    if (!soundEnabled) return;
+    try {
+      const ctx = getAudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sawtooth";
+      osc.frequency.value = 160;
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.25);
+    } catch {}
+  }
+
+  function playNeutralPuck() {
+    if (!soundEnabled) return;
+    try {
+      const ctx = getAudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = 660; // E5
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.15);
+    } catch {}
+  }
+
+  function playHappyPuck() {
+    if (!soundEnabled) return;
+    try {
+      const ctx = getAudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.value = 880; // A5
+      gain.gain.setValueAtTime(0.15, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.2);
+    } catch {}
+  }
+
+  function playPuckSound(points) {
+    if (points <= 0) playBadPuck();
+    else if (points === 10) playHappyPuck();
+    else playNeutralPuck();
   }
 
   const State = {
@@ -1209,13 +1353,27 @@
   }
   
   window.addEventListener("keydown", (e) => {
+    // Escape: undo popup if open, otherwise undo last round
+    if (e.code === "Escape") {
+      const scoreAnimPopup = document.querySelector("[data-popup-type='scoreAnim']");
+      if (scoreAnimPopup && scoreAnimPopup._undo) {
+        e.preventDefault();
+        scoreAnimPopup._undo();
+        return;
+      }
+      const btnUndo = $("#btnUndoRound");
+      if (btnUndo) {
+        e.preventDefault();
+        btnUndo.click();
+        return;
+      }
+    }
     if (e.code === "Space") {
       e.preventDefault();
-      // If score animation popup is open, dismiss it directly
+      // If score animation popup is open, dismiss it (only works after animation)
       const scoreAnimPopup = document.querySelector("[data-popup-type='scoreAnim']");
       if (scoreAnimPopup) {
         if (scoreAnimPopup._dismiss) scoreAnimPopup._dismiss();
-        else scoreAnimPopup.remove();
         return;
       }
       // If winner popup is open, click the New Game button
@@ -1332,33 +1490,27 @@
       ? `<img src="${round.screenshot}" style="width:100%;border-radius:12px;display:block;margin-bottom:18px;max-height:380px;object-fit:cover;" />`
       : "";
 
-    // Build puck breakdown HTML
     const pucks = round.puckScores || [];
     const bluePucks = pucks.filter(p => p.team === "blue").sort((a,b) => b.points - a.points);
     const redPucks  = pucks.filter(p => p.team === "red").sort((a,b) => b.points - a.points);
 
-    function puckBreakdownCol(list, color, total) {
-      if (!list.length) return `<span style="color:#4a5a6a">—</span>`;
-      const parts = list.map(p => `<span>${p.points}</span>`).join(`<span style="color:#4a5a6a"> + </span>`);
-      return parts + `<span style="color:#4a5a6a"> = </span><span style="font-weight:800;color:${color}">${total}</span>`;
-    }
-
-    const breakdownHtml = (bluePucks.length || redPucks.length) ? `
-      <div style="display:flex;gap:0;margin-bottom:6px;border:1px solid #1e3040;border-radius:12px;overflow:hidden;font-size:14px">
-        <div style="flex:1;padding:8px 10px;background:#0a1525;color:#4aa3ff;text-align:center">
-          ${puckBreakdownCol(bluePucks, "#4aa3ff", round.blue)}
-        </div>
-        <div style="width:1px;background:#1e3040"></div>
-        <div style="flex:1;padding:8px 10px;background:#0a1525;color:#ff5b5b;text-align:center">
-          ${puckBreakdownCol(redPucks, "#ff5b5b", round.red)}
-        </div>
-      </div>` : "";
-
     let undone = false;
     let dismissed = false;
+    let animating = true;
+    const pendingTimers = [];
 
-    // Build backdrop manually (not makeModal) so there is exactly ONE
-    // click handler and no competing remove() calls.
+    // Cancellable setTimeout wrapper
+    function scheduleTimer(fn, ms) {
+      const id = setTimeout(fn, ms);
+      pendingTimers.push(id);
+      return id;
+    }
+
+    function cancelAllTimers() {
+      pendingTimers.forEach(id => clearTimeout(id));
+      pendingTimers.length = 0;
+    }
+
     const modal = document.createElement("div");
     Object.assign(modal.style, {
       position:"fixed", inset:"0", background:"rgba(0,0,0,0.3)",
@@ -1373,26 +1525,33 @@
         font-family:-apple-system,system-ui,sans-serif; color:#e7eef7;
         max-height:95vh; overflow-y:auto; position:relative;
       ">
-        <div style="font-size:16px;letter-spacing:1.5px;color:#9fb0c2;margin-bottom:16px;text-transform:uppercase;font-weight:700">Round ${roundNum}</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+          <div style="font-size:16px;letter-spacing:1.5px;color:#9fb0c2;text-transform:uppercase;font-weight:700">Round ${roundNum}</div>
+          <button id="btnUndoScoreAnim" style="
+            background:#401a1a;border:1px solid #6a2b2b;color:#ffd2d8;
+            padding:6px 16px;border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit;
+          ">Undo</button>
+        </div>
         ${img}
 
-        <!-- Puck breakdown -->
-        ${breakdownHtml}
-
-        <!-- Round scores -->
-        <div style="display:flex;gap:0;justify-content:center;align-items:stretch;margin-bottom:6px;border:1px solid #1e3040;border-radius:12px;overflow:hidden">
-          <div style="flex:1;padding:14px 0;background:#0d1f31">
-            <div style="font-size:10px;letter-spacing:1px;color:#4aa3ff;margin-bottom:4px">BLUE</div>
-            <div id="animBlue" style="font-size:48px;font-weight:900;color:#4aa3ff;line-height:1;transition:transform .15s">0</div>
+        <!-- Round breakdown: blue left, red right -->
+        <div style="display:flex;gap:0;margin-bottom:6px;border:1px solid #1e3040;border-radius:12px;overflow:hidden">
+          <div style="flex:1;background:#0d1f31;display:flex;flex-direction:column">
+            <div id="blueEquation" style="padding:12px 10px;font-size:22px;color:#4aa3ff;min-height:40px;display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;flex:1"></div>
+            <div id="blueTotalRow" style="padding:14px 0;background:#0a1525;border-top:1px solid #1e3040;opacity:0;transition:opacity .3s">
+              <div id="animBlue" style="font-size:48px;font-weight:900;color:#4aa3ff;line-height:1">0</div>
+            </div>
           </div>
           <div style="width:1px;background:#1e3040"></div>
-          <div style="flex:1;padding:14px 0;background:#0d1f31">
-            <div style="font-size:10px;letter-spacing:1px;color:#ff5b5b;margin-bottom:4px">RED</div>
-            <div id="animRed" style="font-size:48px;font-weight:900;color:#ff5b5b;line-height:1;transition:transform .15s">0</div>
+          <div style="flex:1;background:#0d1f31;display:flex;flex-direction:column">
+            <div id="redEquation" style="padding:12px 10px;font-size:22px;color:#ff5b5b;min-height:40px;display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;flex:1"></div>
+            <div id="redTotalRow" style="padding:14px 0;background:#0a1525;border-top:1px solid #1e3040;opacity:0;transition:opacity .3s">
+              <div id="animRed" style="font-size:48px;font-weight:900;color:#ff5b5b;line-height:1">0</div>
+            </div>
           </div>
         </div>
 
-        <!-- Running totals — appear after count-up -->
+        <!-- Running totals — appear after puck reveals -->
         <div id="totalsBlock" style="opacity:0;transition:opacity .4s;margin-bottom:6px;border:1px solid #1e3040;border-radius:12px;overflow:hidden">
           <div style="display:flex;gap:0;align-items:stretch">
             <div style="flex:1;padding:10px 0;background:#071220">
@@ -1408,14 +1567,7 @@
           <div id="remainLine" style="padding:10px;font-size:20px;font-weight:700;color:#fbbf24;background:#0e1c2c;letter-spacing:.5px"></div>
         </div>
 
-        <div style="text-align:center;margin-top:12px;margin-bottom:8px">
-          <button id="btnUndoScoreAnim" style="
-            background:#401a1a;border:1px solid #6a2b2b;color:#ffd2d8;
-            padding:10px 28px;border-radius:10px;font-size:14px;cursor:pointer;font-family:inherit;
-          ">Undo Round</button>
-        </div>
-
-        <div style="font-size:11px;color:#4a5a6a;margin-bottom:8px">Tap anywhere to continue</div>
+        <div style="font-size:11px;color:#4a5a6a;margin-bottom:8px">Spacebar or wait to continue, Escape to undo</div>
         <div style="height:4px;background:#1e3040;border-radius:2px;overflow:hidden">
           <div id="autoDismissBar" style="height:100%;width:100%;background:#4aa3ff;border-radius:2px;transition:width linear"></div>
         </div>
@@ -1423,12 +1575,13 @@
     `;
     document.body.appendChild(modal);
 
-    // Auto-dismiss timer
+    // Auto-dismiss timer (started after all animations complete)
     const AUTO_DISMISS_MS = 10000;
     let autoDismissTimer = null;
     const bar = modal.querySelector("#autoDismissBar");
 
     function startAutoDismiss() {
+      animating = false;
       requestAnimationFrame(() => {
         bar.style.transitionDuration = AUTO_DISMISS_MS + "ms";
         bar.style.width = "0%";
@@ -1443,7 +1596,7 @@
     }
 
     function dismissModal() {
-      if (dismissed) return;
+      if (animating || dismissed) return;
       dismissed = true;
       cancelAutoDismiss();
       if (modal.parentNode) modal.remove();
@@ -1458,23 +1611,12 @@
       }
     }
 
-    // Expose dismiss so spacebar handler can call it directly
-    modal._dismiss = dismissModal;
-
-    // Start auto-dismiss immediately
-    startAutoDismiss();
-
-    // Single click handler — dismiss on any click except the undo button
-    modal.addEventListener("click", (e) => {
-      if (e.target.id === "btnUndoScoreAnim") return;
-      dismissModal();
-    });
-
-    // Undo button
-    modal.querySelector("#btnUndoScoreAnim")?.addEventListener("click", (e) => {
-      e.stopPropagation();
+    function doUndo() {
+      if (undone) return;
       undone = true;
-      dismissed = true; // prevent dismissModal from also running
+      dismissed = true;
+      animating = false;
+      cancelAllTimers();
       cancelAutoDismiss();
       const game = State.game;
       if (game && roundNum - 1 < game.rounds.length) {
@@ -1485,74 +1627,137 @@
         }
         updateScoreboard();
       }
-      modal.remove();
+      if (modal.parentNode) modal.remove();
+    }
+
+    // Expose helpers for keyboard handler
+    modal._dismiss = dismissModal;
+    modal._undo = doUndo;
+
+    // Click handler — dismiss on any click except the undo button (only after animation)
+    modal.addEventListener("click", (e) => {
+      if (e.target.id === "btnUndoScoreAnim") return;
+      dismissModal();
     });
 
+    // Undo button
+    modal.querySelector("#btnUndoScoreAnim")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      doUndo();
+    });
+
+    // Element references
+    const blueEquationEl  = modal.querySelector("#blueEquation");
+    const blueTotalRowEl  = modal.querySelector("#blueTotalRow");
     const animBlueEl      = modal.querySelector("#animBlue");
+    const redEquationEl   = modal.querySelector("#redEquation");
+    const redTotalRowEl   = modal.querySelector("#redTotalRow");
     const animRedEl       = modal.querySelector("#animRed");
     const totalsBlock     = modal.querySelector("#totalsBlock");
     const animBlueTotalEl = modal.querySelector("#animBlueTotal");
     const animRedTotalEl  = modal.querySelector("#animRedTotal");
     const remainLineEl    = modal.querySelector("#remainLine");
 
-    // Phase 1: count up round scores (0 → round.blue / round.red)
-    const phase1Dur = 800;
-    const phase1Start = performance.now();
-    let lastTick1 = -1;
+    // Reveal pucks one by one, then show team total
+    function revealTeam(puckList, teamTotal, equationEl, totalRowEl, totalEl, callback) {
+      if (undone) return;
 
-    function phase1(now) {
-      const t    = Math.min(1, (now - phase1Start) / phase1Dur);
-      const ease = 1 - Math.pow(1 - t, 3);
-      const curBlue = Math.round(ease * round.blue);
-      const curRed  = Math.round(ease * round.red);
-      animBlueEl.textContent = curBlue;
-      animRedEl.textContent  = curRed;
-      // Tick sound on each integer change
-      const curMax = Math.max(curBlue, curRed);
-      if (curMax > lastTick1 && curMax > 0) {
-        lastTick1 = curMax;
-        playTick(t);
+      if (!puckList.length) {
+        equationEl.innerHTML = `<span style="color:#4a5a6a">\u2014</span>`;
+        totalEl.textContent = teamTotal;
+        totalRowEl.style.opacity = "1";
+        if (teamTotal <= 0) playSadSound();
+        scheduleTimer(callback, 400);
+        return;
       }
-      if (t < 1) { requestAnimationFrame(phase1); return; }
 
-      // Settle
-      animBlueEl.textContent = round.blue;
-      animRedEl.textContent  = round.red;
+      let idx = 0;
+      function showNextPuck() {
+        if (undone) return;
+        if (idx >= puckList.length) {
+          // All pucks shown — reveal total
+          scheduleTimer(() => {
+            if (undone) return;
+            totalEl.textContent = teamTotal;
+            totalRowEl.style.opacity = "1";
 
-      // Phase 2: fade in totals block then count up totals
-      setTimeout(() => {
-        totalsBlock.style.opacity = "1";
-        animBlueTotalEl.textContent = "0";
-        animRedTotalEl.textContent  = "0";
-        remainLineEl.textContent    = remainStr;
+            // Team-level sound
+            if (teamTotal > 20) playHappyDingFlourish();
+            else if (teamTotal > 10) playHappyDing();
+            else if (teamTotal <= 0) playSadSound();
 
-        const phase2Dur   = 900;
-        const phase2Start = performance.now();
-        let lastTick2 = -1;
-
-        function phase2(now2) {
-          const t2   = Math.min(1, (now2 - phase2Start) / phase2Dur);
-          const ease2 = 1 - Math.pow(1 - t2, 4); // snappier ease
-          const curBT = Math.round(ease2 * blueTotal);
-          const curRT = Math.round(ease2 * redTotal);
-          animBlueTotalEl.textContent = curBT;
-          animRedTotalEl.textContent  = curRT;
-          // Tick sound on each integer change
-          const curMax2 = Math.max(curBT, curRT);
-          if (curMax2 > lastTick2 && curMax2 > 0) {
-            lastTick2 = curMax2;
-            playTick(t2);
-          }
-          if (t2 < 1) { requestAnimationFrame(phase2); }
-          else {
-            animBlueTotalEl.textContent = blueTotal;
-            animRedTotalEl.textContent  = redTotal;
-          }
+            scheduleTimer(callback, 500);
+          }, 350);
+          return;
         }
-        requestAnimationFrame(phase2);
-      }, 250);
+
+        const p = puckList[idx];
+
+        // Operator between pucks
+        if (idx > 0) {
+          const op = document.createElement("span");
+          op.style.cssText = "color:#4a5a6a";
+          op.textContent = p.points < 0 ? "\u2212" : "+";
+          equationEl.appendChild(op);
+        }
+
+        // Puck value (show absolute value if negative and not the first entry)
+        const val = document.createElement("span");
+        val.style.cssText = "font-weight:700;transform:scale(0);display:inline-block;transition:transform .2s ease-out";
+        val.textContent = (idx > 0 && p.points < 0) ? Math.abs(p.points) : p.points;
+        equationEl.appendChild(val);
+
+        requestAnimationFrame(() => { val.style.transform = "scale(1)"; });
+
+        playPuckSound(p.points);
+        idx++;
+        scheduleTimer(showNextPuck, 450);
+      }
+
+      scheduleTimer(showNextPuck, 300);
     }
-    requestAnimationFrame(phase1);
+
+    // Animate: blue pucks+total → red pucks+total → running totals
+    revealTeam(bluePucks, round.blue, blueEquationEl, blueTotalRowEl, animBlueEl, () => {
+      revealTeam(redPucks, round.red, redEquationEl, redTotalRowEl, animRedEl, () => {
+        if (undone) return;
+        // Phase 2: fade in running totals and count up
+        scheduleTimer(() => {
+          if (undone) return;
+          totalsBlock.style.opacity = "1";
+          animBlueTotalEl.textContent = "0";
+          animRedTotalEl.textContent  = "0";
+          remainLineEl.textContent    = remainStr;
+
+          const phase2Dur   = 900;
+          const phase2Start = performance.now();
+          let lastTick2 = -1;
+
+          function phase2(now2) {
+            if (undone) return;
+            const t2    = Math.min(1, (now2 - phase2Start) / phase2Dur);
+            const ease2 = 1 - Math.pow(1 - t2, 4);
+            const curBT = Math.round(ease2 * blueTotal);
+            const curRT = Math.round(ease2 * redTotal);
+            animBlueTotalEl.textContent = curBT;
+            animRedTotalEl.textContent  = curRT;
+            // Escalating tick on each integer change
+            const curMax2 = Math.max(curBT, curRT);
+            if (curMax2 > lastTick2 && curMax2 > 0) {
+              lastTick2 = curMax2;
+              playTick(t2);
+            }
+            if (t2 < 1) { requestAnimationFrame(phase2); }
+            else {
+              animBlueTotalEl.textContent = blueTotal;
+              animRedTotalEl.textContent  = redTotal;
+              startAutoDismiss();
+            }
+          }
+          requestAnimationFrame(phase2);
+        }, 250);
+      });
+    });
   }
 
   function showRoundPopup(round, roundNum) {

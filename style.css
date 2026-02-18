@@ -199,3 +199,14 @@ video {
 }
 
 .sep{ height:1px; background:var(--border); margin:10px 0; }
+
+.sfxToggle{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  font-size:12px;
+  color:var(--muted);
+  cursor:pointer;
+  user-select:none;
+}
+.sfxToggle input{ width:16px; height:16px; accent-color:var(--blue); }

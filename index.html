@@ -3,14 +3,18 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Garage Shuffleboard Scorer (MVP)</title>
+  <title>Shed Shuffle Scorer</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">Garage Shuffleboard Scorer <span class="badge" id="buildVersion"></span></div>
+    <div class="brand">Shed Shuffle Scorer <span class="badge" id="buildVersion"></span></div>
     <div class="status" id="statusPill">Loading…</div>
     <div class="spacer"></div>
+    <label class="sfxToggle" title="Toggle sound effects">
+      <input type="checkbox" id="chkSfx" checked />
+      <span>SFX</span>
+    </label>
     <button class="btn ghost" id="btnTest" title="Load a test image">Test</button>
     <input type="file" id="testImageInput" accept="image/*" class="hidden" />
     <button class="btn ghost" id="btnResetAll" title="Clears calibration + game">Reset</button>
