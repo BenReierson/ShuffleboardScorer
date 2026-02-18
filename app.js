@@ -2,7 +2,7 @@
 // Direct detection of red/blue puck plastic (no stickers needed!)
 
 (() => {
-  const BUILD = "v2.8";
+  const BUILD = "v0.29";
   
   const $ = (sel) => document.querySelector(sel);
   const video = $("#video");
@@ -23,6 +23,7 @@
   
   const LS_KEY = "shuffleboard_v2";
   const LS_HISTORY_KEY = "shuffleboard_v2_history";
+  const LS_GAME_KEY = "shuffleboard_v2_game";
 
   // ========== SOUND EFFECTS (Web Audio API) ==========
   let audioCtx = null;
@@ -259,7 +260,28 @@
       }
     }
   }
-  
+
+  function saveGame() {
+    try {
+      if (State.game && !State.game.ended) {
+        // Strip screenshots to save space
+        const lite = { ...State.game, rounds: State.game.rounds.map(r => ({ ...r, screenshot: null })) };
+        localStorage.setItem(LS_GAME_KEY, JSON.stringify(lite));
+      } else {
+        localStorage.removeItem(LS_GAME_KEY);
+      }
+    } catch {}
+  }
+  function loadGame() {
+    try {
+      const raw = localStorage.getItem(LS_GAME_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+  function clearSavedGame() {
+    localStorage.removeItem(LS_GAME_KEY);
+  }
+
   // Simpler default config
   function defaultConfig() {
     return {
@@ -790,15 +812,33 @@
 
       // Check outer triangle edges
       let touchesEdge = false;
+      let edgeMargin = Infinity;
       for (const edge of edges) {
-        if (distancePointToSegment(center, edge.a, edge.b) < minClear) {
+        const d = distancePointToSegment(center, edge.a, edge.b);
+        if (d < minClear) {
           touchesEdge = true;
-          break;
+          edgeMargin = Math.min(edgeMargin, minClear - d);
         }
       }
 
       if (touchesEdge) {
-        results.push({ ...puck, points: 0, valid: false, zone: "out", effR });
+        const margin = edgeMargin;
+        let altPoints = 0;
+        // If close call and center is inside triangle, calculate what zone it would score
+        if (margin <= 3 && pointInTri(center, A, B, C)) {
+          altPoints = 10;
+          for (let j = 0; j < lines.length; j++) {
+            const dLine = distancePointToSegment(center, lines[j].p1, lines[j].p2);
+            if (dLine < minClear) { altPoints = 0; break; }
+            const s = Math.sign(whichSide(center, lines[j].p1, lines[j].p2)) || 1;
+            if (s !== tipSide[j]) {
+              if (j === 0) altPoints = 8;
+              else if (j === 1) altPoints = 7;
+              else altPoints = -10;
+            }
+          }
+        }
+        results.push({ ...puck, points: 0, valid: false, zone: "out", effR, lineMargin: margin, altPoints });
         continue;
       }
 
@@ -816,7 +856,18 @@
         const distToLine = distancePointToSegment(center, L.p1, L.p2);
 
         if (distToLine < minClear) {
-          results.push({ ...puck, points: 0, valid: false, zone: "line", effR });
+          const lineMargin = minClear - distToLine;
+          // Calculate what zone the puck would be in ignoring line contact
+          let altZone = 10;
+          for (let j = 0; j < lines.length; j++) {
+            const s = Math.sign(whichSide(center, lines[j].p1, lines[j].p2)) || 1;
+            if (s !== tipSide[j]) {
+              if (j === 0) altZone = 8;
+              else if (j === 1) altZone = 7;
+              else altZone = -10;
+            }
+          }
+          results.push({ ...puck, points: 0, valid: false, zone: "line", effR, lineMargin, altPoints: altZone });
           zone = null;
           break;
         }
@@ -974,7 +1025,6 @@
           <button class="btn scoreRound grow" id="btnStartGame">Start Game</button>
         </div>
         <div class="row">
-          <button class="btn grow" id="btnRecalibrate">Recalibrate</button>
           <button class="btn ghost grow" id="btnHistory">Game History</button>
         </div>
       `;
@@ -1089,13 +1139,18 @@
     const btnFinish = $("#btnFinish");
     if (btnFinish) btnFinish.onclick = () => {
       saveConfig();
-      State.mode = "ready";
-      hintText.textContent = "Calibration complete!";
+      const savedGame = loadGame();
+      if (savedGame && !savedGame.ended) {
+        State.game = savedGame;
+        State.mode = "game";
+        hintText.textContent = "Calibration updated — game resumed!";
+      } else {
+        State.mode = "ready";
+        hintText.textContent = "Calibration complete!";
+      }
+      updateScoreboard();
       render();
     };
-    
-    const btnRecal = $("#btnRecalibrate");
-    if (btnRecal) btnRecal.onclick = () => { State.mode = "calibrate_triangle"; render(); };
     
     const btnStart = $("#btnStartGame");
     if (btnStart) btnStart.onclick = () => { State.mode = "game_setup"; render(); };
@@ -1151,6 +1206,7 @@
         ended: false,
       };
       State.mode = "game";
+      saveGame();
       updateScoreboard();
       render();
     };
@@ -1165,8 +1221,9 @@
       State.game.totals.blue -= last.blue;
       State.game.totals.red  -= last.red;
       updateScoreboard();
+      saveGame();
     };
-    
+
     const btnEnd = $("#btnEndGame");
     if (btnEnd) btnEnd.onclick = () => {
       if (!State.game) return;
@@ -1178,6 +1235,7 @@
       }
       State.mode = "ready";
       State.game = null;
+      clearSavedGame();
       updateScoreboard();
       render();
     };
@@ -1332,9 +1390,15 @@
     const scored = scoreRound(pucks);
 
     // Store individual puck scores for the breakdown display
-    const puckScores = scored.results
-      .filter(r => r.valid)
-      .map(r => ({ team: r.team, points: r.points }));
+    // Include all detected pucks; mark borderline ones (edge/line by <= 3px) as questionable
+    const puckScores = scored.results.map(r => {
+      const base = { team: r.team, points: r.points };
+      if (r.lineMargin !== undefined && r.lineMargin <= 3 && r.altPoints && r.altPoints !== 0) {
+        base.questionable = true;
+        base.altPoints = r.altPoints;
+      }
+      return base;
+    });
 
     const round = {
       blue: scored.sum.blue,
@@ -1349,6 +1413,7 @@
     State.game.totals.red  += scored.sum.red;
 
     updateScoreboard();
+    saveGame();
     showScoreAnimation(round, State.game.rounds.length);
   }
   
@@ -1397,6 +1462,12 @@
     }
   });
   
+  $("#btnRecalibrate").onclick = () => {
+    saveGame();
+    State.mode = "calibrate_triangle";
+    render();
+  };
+
   $("#btnResetAll").onclick = () => {
     if (!confirm("Reset calibration? Game history is kept.")) return;
     if (State.game && !State.game.ended && State.game.rounds.length > 0) {
@@ -1405,13 +1476,14 @@
       saveToHistory(State.game);
     }
     State.game = null;
+    clearSavedGame();
     State.config = defaultConfig();
     saveConfig();
     State.mode = "calibrate_triangle";
     updateScoreboard();
     render();
   };
-  
+
   // ========== TEST IMAGE ==========
   const testImageInput = $("#testImageInput");
   const btnTest = $("#btnTest");
@@ -1606,6 +1678,7 @@
           game.ended = true;
           game.endedAt = Date.now();
           saveToHistory(game);
+          clearSavedGame();
           showWinnerPopup(game);
         }
       }
@@ -1626,6 +1699,7 @@
           game.totals.red  -= r.red;
         }
         updateScoreboard();
+        saveGame();
       }
       if (modal.parentNode) modal.remove();
     }
@@ -1658,15 +1732,34 @@
     const animRedTotalEl  = modal.querySelector("#animRedTotal");
     const remainLineEl    = modal.querySelector("#remainLine");
 
+    // Recalculate round & game totals after a questionable puck toggle
+    function recalcRound() {
+      const oldBlue = round.blue, oldRed = round.red;
+      round.blue = round.puckScores.filter(p => p.team === "blue").reduce((s, p) => s + p.points, 0);
+      round.red  = round.puckScores.filter(p => p.team === "red").reduce((s, p) => s + p.points, 0);
+      if (g) {
+        g.totals.blue += (round.blue - oldBlue);
+        g.totals.red  += (round.red - oldRed);
+      }
+      animBlueEl.textContent = round.blue;
+      animRedEl.textContent  = round.red;
+      if (g) {
+        animBlueTotalEl.textContent = g.totals.blue;
+        animRedTotalEl.textContent  = g.totals.red;
+      }
+      updateScoreboard();
+      saveGame();
+    }
+
     // Reveal pucks one by one, then show team total
-    function revealTeam(puckList, teamTotal, equationEl, totalRowEl, totalEl, callback) {
+    function revealTeam(puckList, team, equationEl, totalRowEl, totalEl, callback) {
       if (undone) return;
 
       if (!puckList.length) {
         equationEl.innerHTML = `<span style="color:#4a5a6a">\u2014</span>`;
-        totalEl.textContent = teamTotal;
+        totalEl.textContent = round[team];
         totalRowEl.style.opacity = "1";
-        if (teamTotal <= 0) playSadSound();
+        if (round[team] <= 0) playSadSound();
         scheduleTimer(callback, 400);
         return;
       }
@@ -1678,13 +1771,14 @@
           // All pucks shown — reveal total
           scheduleTimer(() => {
             if (undone) return;
-            totalEl.textContent = teamTotal;
+            totalEl.textContent = round[team];
             totalRowEl.style.opacity = "1";
 
             // Team-level sound
-            if (teamTotal > 20) playHappyDingFlourish();
-            else if (teamTotal > 10) playHappyDing();
-            else if (teamTotal <= 0) playSadSound();
+            const tt = round[team];
+            if (tt > 20) playHappyDingFlourish();
+            else if (tt > 10) playHappyDing();
+            else if (tt <= 0) playSadSound();
 
             scheduleTimer(callback, 500);
           }, 350);
@@ -1701,11 +1795,43 @@
           equationEl.appendChild(op);
         }
 
-        // Puck value (show absolute value if negative and not the first entry)
+        // Puck value
         const val = document.createElement("span");
         val.style.cssText = "font-weight:700;transform:scale(0);display:inline-block;transition:transform .2s ease-out";
         val.textContent = (idx > 0 && p.points < 0) ? Math.abs(p.points) : p.points;
         equationEl.appendChild(val);
+
+        // Questionable puck — add '?' / '⎌' toggle button
+        if (p.questionable) {
+          const qBtn = document.createElement("button");
+          qBtn.style.cssText = "background:#3a3520;border:1px solid #7a6a30;color:#fbbf24;padding:1px 5px;border-radius:5px;font-size:13px;cursor:pointer;font-family:inherit;margin-left:2px;line-height:1;vertical-align:middle";
+          qBtn.textContent = "?";
+          equationEl.appendChild(qBtn);
+
+          qBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            // Cancel auto-dismiss so user can review the change
+            cancelAutoDismiss();
+            bar.style.transitionDuration = "0s";
+            bar.style.width = "100%";
+            if (qBtn.textContent === "?") {
+              p.points = p.altPoints;
+              val.textContent = p.altPoints;
+              qBtn.textContent = "\u238C";
+              qBtn.style.background = "#1a3520";
+              qBtn.style.borderColor = "#2a6b4a";
+              qBtn.style.color = "#36d399";
+            } else {
+              p.points = 0;
+              val.textContent = "0";
+              qBtn.textContent = "?";
+              qBtn.style.background = "#3a3520";
+              qBtn.style.borderColor = "#7a6a30";
+              qBtn.style.color = "#fbbf24";
+            }
+            recalcRound();
+          });
+        }
 
         requestAnimationFrame(() => { val.style.transform = "scale(1)"; });
 
@@ -1718,8 +1844,8 @@
     }
 
     // Animate: blue pucks+total → red pucks+total → running totals
-    revealTeam(bluePucks, round.blue, blueEquationEl, blueTotalRowEl, animBlueEl, () => {
-      revealTeam(redPucks, round.red, redEquationEl, redTotalRowEl, animRedEl, () => {
+    revealTeam(bluePucks, "blue", blueEquationEl, blueTotalRowEl, animBlueEl, () => {
+      revealTeam(redPucks, "red", redEquationEl, redTotalRowEl, animRedEl, () => {
         if (undone) return;
         // Phase 2: fade in running totals and count up
         scheduleTimer(() => {
@@ -1735,10 +1861,12 @@
 
           function phase2(now2) {
             if (undone) return;
+            const gbt = g ? g.totals.blue : 0;
+            const grt = g ? g.totals.red  : 0;
             const t2    = Math.min(1, (now2 - phase2Start) / phase2Dur);
             const ease2 = 1 - Math.pow(1 - t2, 4);
-            const curBT = Math.round(ease2 * blueTotal);
-            const curRT = Math.round(ease2 * redTotal);
+            const curBT = Math.round(ease2 * gbt);
+            const curRT = Math.round(ease2 * grt);
             animBlueTotalEl.textContent = curBT;
             animRedTotalEl.textContent  = curRT;
             // Escalating tick on each integer change
@@ -1749,8 +1877,8 @@
             }
             if (t2 < 1) { requestAnimationFrame(phase2); }
             else {
-              animBlueTotalEl.textContent = blueTotal;
-              animRedTotalEl.textContent  = redTotal;
+              animBlueTotalEl.textContent = gbt;
+              animRedTotalEl.textContent  = grt;
               startAutoDismiss();
             }
           }
@@ -2394,7 +2522,13 @@
     State.config = loadConfig();
     const raw = localStorage.getItem(LS_KEY);
     State.mode = raw ? "ready" : "calibrate_triangle";
-    
+
+    const savedGame = loadGame();
+    if (savedGame && !savedGame.ended && raw) {
+      State.game = savedGame;
+      State.mode = "game";
+    }
+
     render();
     updateScoreboard();
     startCamera();
