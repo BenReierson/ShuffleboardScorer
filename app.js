@@ -1374,7 +1374,19 @@
     gameSummaryEl.textContent = (g.ended ? "Ended" : "In progress") + " • " + goalStr;
 
     roundGridBody.innerHTML = "";
-    g.rounds.forEach((r, idx) => {
+    // Compute cumulative totals per round
+    const cumulTotals = [];
+    let cumBlue = 0, cumRed = 0;
+    g.rounds.forEach((r) => {
+      cumBlue += r.blue;
+      cumRed += r.red;
+      cumulTotals.push({ blue: cumBlue, red: cumRed });
+    });
+    // Render in reverse order (latest round first)
+    for (let idx = g.rounds.length - 1; idx >= 0; idx--) {
+      const r = g.rounds[idx];
+      const ct = cumulTotals[idx];
+      const totalStr = `${ct.blue} - ${ct.red}`;
       const tr = document.createElement("tr");
       tr.style.cursor = "pointer";
       tr.title = "Click to view screenshot";
@@ -1382,12 +1394,13 @@
         <td>${idx+1}</td>
         <td class="blue">${r.blue}</td>
         <td class="red">${r.red}</td>
+        <td style="color:#aaa;font-size:0.85em">${totalStr}</td>
       `;
       if (r.screenshot) {
         tr.onclick = () => showRoundPopup(r, idx + 1);
       }
       roundGridBody.appendChild(tr);
-    });
+    }
 
     // Goal-reached check is handled by showScoreAnimation dismiss callback
   }
@@ -1799,12 +1812,23 @@
                 qBtn.style.background = "#1a3520";
                 qBtn.style.borderColor = "#2a6b4a";
                 qBtn.style.color = "#36d399";
+                // Overlay new score on the puck thumb
+                let ov = thumb.querySelector(".puck-score-overlay");
+                if (!ov) {
+                  ov = document.createElement("div");
+                  ov.className = "puck-score-overlay";
+                  ov.style.cssText = "position:absolute;inset:0;background:rgba(0,0,0,0.75);display:flex;align-items:center;justify-content:center;border-radius:50%;font-size:14px;font-weight:bold;color:#36d399;pointer-events:none";
+                  thumb.appendChild(ov);
+                }
+                ov.textContent = p.altPoints;
               } else {
                 p.points = 0;
                 qBtn.textContent = "?";
                 qBtn.style.background = "#3a3520";
                 qBtn.style.borderColor = "#7a6a30";
                 qBtn.style.color = "#fbbf24";
+                const ov = thumb.querySelector(".puck-score-overlay");
+                if (ov) ov.remove();
               }
               recalcRound();
             });
@@ -2067,12 +2091,23 @@
               qBtn.style.background = "#1a3520";
               qBtn.style.borderColor = "#2a6b4a";
               qBtn.style.color = "#36d399";
+              // Overlay new score on the puck thumb
+              let ov = thumb.querySelector(".puck-score-overlay");
+              if (!ov) {
+                ov = document.createElement("div");
+                ov.className = "puck-score-overlay";
+                ov.style.cssText = "position:absolute;inset:0;background:rgba(0,0,0,0.75);display:flex;align-items:center;justify-content:center;border-radius:50%;font-size:14px;font-weight:bold;color:#36d399;pointer-events:none";
+                thumb.appendChild(ov);
+              }
+              ov.textContent = p.altPoints;
             } else {
               p.points = 0;
               qBtn.textContent = "?";
               qBtn.style.background = "#3a3520";
               qBtn.style.borderColor = "#7a6a30";
               qBtn.style.color = "#fbbf24";
+              const ov = thumb.querySelector(".puck-score-overlay");
+              if (ov) ov.remove();
             }
             recalcRound();
           });
