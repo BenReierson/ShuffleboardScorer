@@ -230,6 +230,39 @@
     else playNeutralPuck();
   }
 
+  // Drum roll that builds over durationSec, returns { stop() } to cut it short
+  function playDrumRoll(durationSec) {
+    if (!soundEnabled) return { stop() {} };
+    try {
+      const ctx = getAudioCtx();
+      const now = ctx.currentTime;
+      const oscs = [];
+      const totalHits = Math.round(durationSec * 16);
+      for (let i = 0; i < totalHits; i++) {
+        const t = now + (i / totalHits) * durationSec;
+        const progress = i / totalHits;
+        // Accelerating hits with rising pitch and volume
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "triangle";
+        osc.frequency.value = 120 + progress * 80;
+        const vol = 0.04 + progress * 0.1;
+        gain.gain.setValueAtTime(vol, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.06);
+        oscs.push(osc);
+      }
+      return {
+        stop() {
+          oscs.forEach(o => { try { o.stop(); } catch {} });
+        }
+      };
+    } catch { return { stop() {} }; }
+  }
+
   const State = {
     mode: "init",
     drag: null,
@@ -1444,9 +1477,10 @@
     }
     if (e.code === "Space") {
       e.preventDefault();
-      // If score animation popup is open, dismiss it (only works after animation)
+      // If score animation popup is open, skip animation or dismiss
       const scoreAnimPopup = document.querySelector("[data-popup-type='scoreAnim']");
       if (scoreAnimPopup) {
+        if (scoreAnimPopup._skip) { scoreAnimPopup._skip(); return; }
         if (scoreAnimPopup._dismiss) scoreAnimPopup._dismiss();
         return;
       }
@@ -1723,9 +1757,85 @@
       if (modal.parentNode) modal.remove();
     }
 
+    // Skip to end: instantly show all pucks, totals, and start auto-dismiss
+    function skipToEnd() {
+      if (!animating || undone || dismissed) return;
+      cancelAllTimers();
+      cleanupFlyEls();
+
+      // Populate both equations with all puck thumbs
+      function fillEquation(puckList, team, equationEl) {
+        equationEl.innerHTML = "";
+        if (!puckList.length) {
+          equationEl.innerHTML = `<span style="color:#4a5a6a">\u2014</span>`;
+          return;
+        }
+        puckList.forEach((p, i) => {
+          if (i > 0) {
+            const op = document.createElement("span");
+            op.style.cssText = "color:#4a5a6a";
+            op.textContent = p.points < 0 ? "\u2212" : "+";
+            equationEl.appendChild(op);
+          }
+          const thumb = makePuckThumb(p, team);
+          equationEl.appendChild(thumb);
+          thumb.addEventListener("click", (e) => {
+            e.stopPropagation();
+            showPuckZoom(p, team);
+          });
+          if (p.questionable) {
+            const qBtn = document.createElement("button");
+            qBtn.style.cssText = "background:#3a3520;border:1px solid #7a6a30;color:#fbbf24;padding:1px 5px;border-radius:5px;font-size:13px;cursor:pointer;font-family:inherit;margin-left:2px;line-height:1;vertical-align:middle";
+            qBtn.textContent = "?";
+            equationEl.appendChild(qBtn);
+            qBtn.addEventListener("click", (e) => {
+              e.stopPropagation();
+              cancelAutoDismiss();
+              bar.style.transitionDuration = "0s";
+              bar.style.width = "100%";
+              if (qBtn.textContent === "?") {
+                p.points = p.altPoints;
+                qBtn.textContent = "\u238C";
+                qBtn.style.background = "#1a3520";
+                qBtn.style.borderColor = "#2a6b4a";
+                qBtn.style.color = "#36d399";
+              } else {
+                p.points = 0;
+                qBtn.textContent = "?";
+                qBtn.style.background = "#3a3520";
+                qBtn.style.borderColor = "#7a6a30";
+                qBtn.style.color = "#fbbf24";
+              }
+              recalcRound();
+            });
+          }
+        });
+      }
+
+      fillEquation(bluePucks, "blue", blueEquationEl);
+      fillEquation(redPucks, "red", redEquationEl);
+
+      // Show team totals
+      animBlueEl.textContent = round.blue;
+      animRedEl.textContent  = round.red;
+      blueTotalRowEl.style.opacity = "1";
+      redTotalRowEl.style.opacity  = "1";
+
+      // Show running totals at final values
+      const gbt = g ? g.totals.blue : 0;
+      const grt = g ? g.totals.red  : 0;
+      animBlueTotalEl.textContent = gbt;
+      animRedTotalEl.textContent  = grt;
+      remainLineEl.textContent = remainStr;
+      totalsBlock.style.opacity = "1";
+
+      startAutoDismiss();
+    }
+
     // Expose helpers for keyboard handler
     modal._dismiss = dismissModal;
     modal._undo = doUndo;
+    modal._skip = () => { if (animating) skipToEnd(); else dismissModal(); };
 
     // Click handler — dismiss on any click except the undo button (only after animation)
     modal.addEventListener("click", (e) => {
@@ -1797,19 +1907,17 @@
       };
     }
 
-    // Create a puck thumbnail element for the equation (circular crop + points badge)
+    // Create a puck thumbnail element for the equation (circular crop of board)
     function makePuckThumb(p, team) {
       const thumb = document.createElement("div");
       const size = 36;
       const borderColor = team === "blue" ? "#4aa3ff" : "#ff5b5b";
-      const textColor = team === "blue" ? "#4aa3ff" : "#ff5b5b";
-      thumb.style.cssText = `display:inline-block;width:${size}px;height:${size}px;border-radius:50%;border:2px solid ${borderColor};position:relative;vertical-align:middle;overflow:hidden;flex-shrink:0;`;
+      thumb.style.cssText = `display:inline-block;width:${size}px;height:${size}px;border-radius:50%;border:2px solid ${borderColor};position:relative;vertical-align:middle;overflow:hidden;flex-shrink:0;cursor:pointer;`;
       if (round.screenshot && p.x !== undefined && screenshotImg) {
         const natW = screenshotImg.naturalWidth;
         const natH = screenshotImg.naturalHeight;
-        // Background zoom: show ~4x magnification centered on puck
         const dispW = screenshotImg.clientWidth || 400;
-        const bgScale = 4;
+        const bgScale = 2.5;
         const bgW = dispW * bgScale;
         const bgH = (dispW * natH / natW) * bgScale;
         const pxInSS = p.x * devicePixelRatio;
@@ -1820,13 +1928,67 @@
         thumb.style.backgroundSize = `${bgW}px ${bgH}px`;
         thumb.style.backgroundPosition = `${bgX}px ${bgY}px`;
       }
-      // Points badge
-      const badge = document.createElement("div");
-      badge.style.cssText = `position:absolute;bottom:-1px;right:-1px;background:#0b1520;color:${textColor};font-size:11px;font-weight:800;padding:1px 4px;border-radius:6px;border:1px solid ${borderColor};line-height:1.1;`;
-      badge.textContent = p.points;
-      badge.className = "puck-badge";
-      thumb.appendChild(badge);
-      return { thumb, badge };
+      return thumb;
+    }
+
+    // Show a zoomed view of a puck on the screenshot (click-to-inspect)
+    let activePuckZoom = null;
+    function showPuckZoom(p, team) {
+      if (!screenshotWrap || !screenshotImg || !round.screenshot || p.x === undefined) return;
+      // Remove any existing zoom overlay
+      if (activePuckZoom) { activePuckZoom.remove(); activePuckZoom = null; }
+
+      cancelAutoDismiss();
+      bar.style.transitionDuration = "0s";
+      bar.style.width = "100%";
+
+      const wrapRect = screenshotWrap.getBoundingClientRect();
+      const wrapW = wrapRect.width;
+      const wrapH = wrapRect.height;
+      const natW = screenshotImg.naturalWidth;
+      const natH = screenshotImg.naturalHeight;
+      const pxSS = p.x * devicePixelRatio;
+      const pySS = p.y * devicePixelRatio;
+
+      const zoomEl = document.createElement("div");
+      const zoom = 5;
+      const bgW = wrapW * zoom;
+      const bgH = wrapH * zoom;
+      const bgX = -(pxSS / natW) * bgW + wrapW / 2;
+      const bgY = -(pySS / natH) * bgH + wrapH / 2;
+      const borderColor = team === "blue" ? "#4aa3ff" : "#ff5b5b";
+
+      Object.assign(zoomEl.style, {
+        position: "fixed",
+        left: wrapRect.left + "px",
+        top: wrapRect.top + "px",
+        width: wrapW + "px",
+        height: wrapH + "px",
+        borderRadius: "12px",
+        overflow: "hidden",
+        zIndex: "1100",
+        border: `2px solid ${borderColor}`,
+        boxShadow: `0 0 20px ${team === "blue" ? "rgba(74,163,255,0.4)" : "rgba(255,91,91,0.4)"}`,
+        backgroundImage: `url(${round.screenshot})`,
+        backgroundRepeat: "no-repeat",
+        backgroundSize: `${bgW}px ${bgH}px`,
+        backgroundPosition: `${bgX}px ${bgY}px`,
+        cursor: "pointer",
+        opacity: "0",
+        transition: "opacity .2s ease-out",
+      });
+
+      document.body.appendChild(zoomEl);
+      flyEls.push(zoomEl);
+      activePuckZoom = zoomEl;
+      requestAnimationFrame(() => { zoomEl.style.opacity = "1"; });
+
+      // Click to dismiss
+      zoomEl.addEventListener("click", (e) => {
+        e.stopPropagation();
+        zoomEl.style.opacity = "0";
+        setTimeout(() => { zoomEl.remove(); activePuckZoom = null; }, 200);
+      });
     }
 
     // Reveal pucks one by one with board-zoom animation, then show team total
@@ -1875,10 +2037,16 @@
           equationEl.appendChild(op);
         }
 
-        const { thumb, badge } = makePuckThumb(p, team);
+        const thumb = makePuckThumb(p, team);
         thumb.style.visibility = "hidden";
         thumb.style.transition = "transform .25s ease-out, opacity .25s ease-out";
         equationEl.appendChild(thumb);
+
+        // Click puck thumb to show zoomed view
+        thumb.addEventListener("click", (e) => {
+          e.stopPropagation();
+          showPuckZoom(p, team);
+        });
 
         // Questionable puck — add '?' / '⎌' toggle button
         let qBtn = null;
@@ -1895,14 +2063,12 @@
             bar.style.width = "100%";
             if (qBtn.textContent === "?") {
               p.points = p.altPoints;
-              badge.textContent = p.altPoints;
               qBtn.textContent = "\u238C";
               qBtn.style.background = "#1a3520";
               qBtn.style.borderColor = "#2a6b4a";
               qBtn.style.color = "#36d399";
             } else {
               p.points = 0;
-              badge.textContent = "0";
               qBtn.textContent = "?";
               qBtn.style.background = "#3a3520";
               qBtn.style.borderColor = "#7a6a30";
@@ -1977,7 +2143,7 @@
 
         // b) Zoom out to show context (fill screenshot area)
         scheduleTimer(() => {
-          if (undone) { flyEl.remove(); return; }
+          if (undone || !animating) { flyEl.remove(); return; }
           const endZoom = 3;
           flyEl.style.borderRadius = "12px";
           flyEl.style.left = wrapRect.left + "px";
@@ -1987,14 +2153,11 @@
           setBgForSize(wrapW, wrapH, endZoom);
         }, 50);
 
-        // c) After zoom completes, pause if close call, then fly to equation
-        const pauseDuration = isCloseCall ? 1500 : 0;
-        const afterZoomDelay = 550 + pauseDuration;
+        // c) After initial zoom completes: if close call, do dramatic zoom-in with drum roll
+        function flyToEquation() {
+          if (undone || !animating) { flyEl.remove(); return; }
 
-        scheduleTimer(() => {
-          if (undone) { flyEl.remove(); return; }
-
-          // d) Get target position in equation for the fly animation
+          // Get target position in equation for the fly animation
           const thumbRect = thumb.getBoundingClientRect();
           const targetSize = 36;
 
@@ -2017,9 +2180,9 @@
           flyEl.style.backgroundSize = `${bgW}px ${bgH}px`;
           flyEl.style.backgroundPosition = `${bgX}px ${bgY}px`;
 
-          // e) After fly completes, show the equation thumb and remove flyEl
+          // After fly completes, show the equation thumb and remove flyEl
           scheduleTimer(() => {
-            if (undone) { flyEl.remove(); return; }
+            if (undone || !animating) { flyEl.remove(); return; }
             flyEl.remove();
             thumb.style.visibility = "visible";
             thumb.style.transform = "scale(1)";
@@ -2028,7 +2191,42 @@
             idx++;
             scheduleTimer(showNextPuck, 200);
           }, 650);
-        }, afterZoomDelay);
+        }
+
+        if (isCloseCall) {
+          // Dramatic zoom-in with drum roll over 3 seconds
+          const zoomDur = 3000;
+          const zoomStartZoom = 3;
+          const zoomEndZoom = 10;
+          let drumRoll = null;
+
+          scheduleTimer(() => {
+            if (undone || !animating) { flyEl.remove(); return; }
+            // Disable CSS transitions — we animate with rAF
+            flyEl.style.transition = "none";
+            drumRoll = playDrumRoll(zoomDur / 1000);
+            const zoomStart = performance.now();
+
+            function zoomFrame(now) {
+              if (undone || !animating) { flyEl.remove(); if (drumRoll) drumRoll.stop(); return; }
+              const t = Math.min(1, (now - zoomStart) / zoomDur);
+              const ease = t * t; // Accelerating zoom
+              const curZoom = zoomStartZoom + (zoomEndZoom - zoomStartZoom) * ease;
+              setBgForSize(wrapW, wrapH, curZoom);
+              if (t < 1) {
+                requestAnimationFrame(zoomFrame);
+              } else {
+                if (drumRoll) drumRoll.stop();
+                // Brief pause at max zoom, then fly to equation
+                scheduleTimer(flyToEquation, 300);
+              }
+            }
+            requestAnimationFrame(zoomFrame);
+          }, 550); // After initial zoom-out completes
+        } else {
+          // No close call — fly directly after initial zoom
+          scheduleTimer(flyToEquation, 550);
+        }
       }
 
       scheduleTimer(showNextPuck, 300);
