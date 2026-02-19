@@ -1680,7 +1680,7 @@
         ${img}
 
         <!-- Round breakdown: blue left, red right -->
-        <div style="display:flex;gap:0;margin-bottom:6px;border:1px solid #1e3040;border-radius:12px;overflow:hidden">
+        <div id="equationsSection" style="display:flex;gap:0;margin-bottom:6px;border:1px solid #1e3040;border-radius:12px;overflow:hidden">
           <div style="flex:1;background:#0d1f31;display:flex;flex-direction:column">
             <div id="blueEquation" style="padding:12px 10px;font-size:22px;color:#4aa3ff;min-height:40px;display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;flex:1"></div>
             <div id="blueTotalRow" style="padding:14px 0;background:#0a1525;border-top:1px solid #1e3040;opacity:0;transition:opacity .3s">
@@ -1727,6 +1727,7 @@
 
     function startAutoDismiss() {
       animating = false;
+      captureEquations();
       requestAnimationFrame(() => {
         bar.style.transitionDuration = AUTO_DISMISS_MS + "ms";
         bar.style.width = "0%";
@@ -1901,6 +1902,16 @@
     const screenshotImg   = modal.querySelector("#screenshotImg");
     const remainLineEl    = modal.querySelector("#remainLine");
 
+    // Capture the equations section as an image for the round summary popup
+    function captureEquations() {
+      const el = modal.querySelector("#equationsSection");
+      if (!el || typeof html2canvas === 'undefined') return;
+      html2canvas(el, { backgroundColor: '#0b1520', scale: 2 }).then(canvas => {
+        round.equationScreenshot = canvas.toDataURL("image/jpeg", 0.85);
+        saveGame();
+      }).catch(err => console.warn("Equation capture failed:", err));
+    }
+
     // Recalculate round & game totals after a questionable puck toggle
     function recalcRound() {
       const oldBlue = round.blue, oldRed = round.red;
@@ -1928,6 +1939,7 @@
       }
       updateScoreboard();
       saveGame();
+      captureEquations();
     }
 
     // Helper: map puck CSS coords to screenshot img display coords
@@ -2330,6 +2342,18 @@
     const img = round.screenshot
       ? `<img src="${round.screenshot}" style="width:100%;border-radius:10px;display:block;margin-bottom:14px;" />`
       : `<div style="color:#9fb0c2;margin-bottom:14px;text-align:center">No screenshot</div>`;
+    const eqImg = round.equationScreenshot
+      ? `<img src="${round.equationScreenshot}" style="width:100%;border-radius:10px;display:block;margin-bottom:14px;" />`
+      : `<div style="display:flex;gap:24px;justify-content:center;margin-bottom:12px">
+          <div style="text-align:center">
+            <div style="font-size:11px;color:#4aa3ff">BLUE</div>
+            <div style="font-size:36px;font-weight:800;color:#4aa3ff">${round.blue}</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:11px;color:#ff5b5b">RED</div>
+            <div style="font-size:36px;font-weight:800;color:#ff5b5b">${round.red}</div>
+          </div>
+        </div>`;
     const roundIdx = roundNum - 1;
     const canUndo = State.game && !State.game.ended && roundIdx < State.game.rounds.length;
     const modal = makeModal(`
@@ -2339,16 +2363,7 @@
       ">
         <div style="font-size:13px;color:#9fb0c2;margin-bottom:12px;text-transform:uppercase;letter-spacing:1px">Round ${roundNum}</div>
         ${img}
-        <div style="display:flex;gap:24px;justify-content:center;margin-bottom:12px">
-          <div style="text-align:center">
-            <div style="font-size:11px;color:#4aa3ff">BLUE</div>
-            <div style="font-size:36px;font-weight:800;color:#4aa3ff">${round.blue}</div>
-          </div>
-          <div style="text-align:center">
-            <div style="font-size:11px;color:#ff5b5b">RED</div>
-            <div style="font-size:36px;font-weight:800;color:#ff5b5b">${round.red}</div>
-          </div>
-        </div>
+        ${eqImg}
         ${canUndo ? `<div style="text-align:center;margin-bottom:12px">
           <button id="btnUndoRoundPopup" style="
             background:#401a1a;border:1px solid #6a2b2b;color:#ffd2d8;
