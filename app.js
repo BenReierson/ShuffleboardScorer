@@ -641,7 +641,10 @@
     const redMask = new Uint8Array(W * H);
     const blueMask = new Uint8Array(W * H);
     
-    // ROI check
+    // ROI check — expand the triangle outward by the puck radius so that
+    // pucks straddling an edge still have all their pixels included in blob
+    // detection.  Without this margin the centroid of edge-straddling pucks
+    // shifts inward, causing the overlay circle to visually decentre.
     const useROI = State.mode !== "calibrate_triangle";
     let At, Bt, Ct;
     if (useROI) {
@@ -650,6 +653,17 @@
       At = { x: A.x * devicePixelRatio, y: A.y * devicePixelRatio };
       Bt = { x: B.x * devicePixelRatio, y: B.y * devicePixelRatio };
       Ct = { x: C.x * devicePixelRatio, y: C.y * devicePixelRatio };
+
+      // Expand each vertex outward from the triangle centroid by puckRadius
+      const roiMargin = cfg.puckRadius * devicePixelRatio * 8;
+      const cx = (At.x + Bt.x + Ct.x) / 3;
+      const cy = (At.y + Bt.y + Ct.y) / 3;
+      for (const v of [At, Bt, Ct]) {
+        const dx = v.x - cx, dy = v.y - cy;
+        const d = Math.hypot(dx, dy);
+        v.x += (dx / d) * roiMargin;
+        v.y += (dy / d) * roiMargin;
+      }
     }
     
     // Classify each pixel
