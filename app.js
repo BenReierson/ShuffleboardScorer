@@ -1746,6 +1746,16 @@
       if (g) {
         animBlueTotalEl.textContent = g.totals.blue;
         animRedTotalEl.textContent  = g.totals.red;
+        // Update "pts to go" / remaining label
+        if (g.goalType === "points") {
+          const leader = Math.max(g.totals.blue, g.totals.red);
+          const rem = Math.max(0, g.goalPoints - leader);
+          remainStr = rem === 0 ? "🏆 Goal reached!" : `${rem} pts to go`;
+        } else {
+          const rem = Math.max(0, g.goalRounds - roundNum);
+          remainStr = rem === 0 ? "🏆 Final round!" : `${rem} round${rem !== 1 ? "s" : ""} remaining`;
+        }
+        remainLineEl.textContent = remainStr;
       }
       updateScoreboard();
       saveGame();
