@@ -34,18 +34,20 @@
       <div class="panel" id="panelControls"></div>
 
       <div class="scoreHeader">
-        <div>
-          <div class="hLabel">Game</div>
-          <div class="hValue" id="gameSummary">Not started</div>
-        </div>
-        <div class="totals">
-          <div class="teamCard blue">
-            <div class="teamName">Blue</div>
-            <div class="teamScore" id="blueTotal">0</div>
+        <div class="scoreHeaderStatus" id="gameSummary">Not started</div>
+        <div class="scoreHeaderRow">
+          <div class="scoreGraphWrap">
+            <canvas id="scoreGraph" class="scoreGraph"></canvas>
           </div>
-          <div class="teamCard red">
-            <div class="teamName">Red</div>
-            <div class="teamScore" id="redTotal">0</div>
+          <div class="totals">
+            <div class="teamCard blue">
+              <div class="teamName">Blue</div>
+              <div class="teamScore" id="blueTotal">0</div>
+            </div>
+            <div class="teamCard red">
+              <div class="teamName">Red</div>
+              <div class="teamScore" id="redTotal">0</div>
+            </div>
           </div>
         </div>
       </div>

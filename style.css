@@ -142,13 +142,37 @@ video {
   border-radius:14px;
   padding:12px;
   display:flex;
-  justify-content:space-between;
-  align-items:flex-end;
-  gap:12px;
+  flex-direction:column;
+  gap:6px;
 }
-.hLabel{ font-size:12px; color:var(--muted); }
-.hValue{ font-size:16px; font-weight:700; }
-.totals{ display:flex; gap:10px; }
+.scoreHeaderStatus{
+  font-size:12px;
+  color:var(--muted);
+  font-weight:600;
+  letter-spacing:0.5px;
+}
+.scoreHeaderRow{
+  display:flex;
+  gap:12px;
+  align-items:stretch;
+}
+.scoreGraphWrap{
+  flex:1;
+  min-width:0;
+  position:relative;
+  border-radius:10px;
+  background:var(--panel2);
+  border:1px solid var(--border);
+  overflow:hidden;
+}
+.scoreGraph{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  display:block;
+}
+.totals{ display:flex; gap:10px; flex-shrink:0; }
 .teamCard{
   min-width:120px;
   border-radius:14px;

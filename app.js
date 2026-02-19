@@ -2,7 +2,7 @@
 // Direct detection of red/blue puck plastic (no stickers needed!)
 
 (() => {
-  const BUILD = "v0.29";
+  const BUILD = "v0.30";
   
   const $ = (sel) => document.querySelector(sel);
   const video = $("#video");
@@ -16,6 +16,7 @@
   const blueTotalEl = $("#blueTotal");
   const redTotalEl = $("#redTotal");
   const gameSummaryEl = $("#gameSummary");
+  const scoreGraphCanvas = $("#scoreGraph");
   const roundGridBody = $("#roundGridBody");
   const hintText = $("#hintText");
   const buildVersionEl = $("#buildVersion");
@@ -1376,16 +1377,24 @@
       redTotalEl.textContent = "0";
       gameSummaryEl.textContent = "Not started";
       roundGridBody.innerHTML = "";
+      drawScoreGraph(null);
       return;
     }
     blueTotalEl.textContent = String(g.totals.blue);
     redTotalEl.textContent = String(g.totals.red);
 
-    const goalParts = [];
-    if (g.goalType === "points" && g.goalPoints > 0) goalParts.push(g.goalPoints + " pts");
-    if (g.goalType === "rounds" && g.goalRounds > 0) goalParts.push(g.goalRounds + " rnds");
-    const goalStr = goalParts.length ? goalParts.join(" · ") : "no limit";
-    gameSummaryEl.textContent = (g.ended ? "Ended" : "In progress") + " • " + goalStr;
+    // Status text
+    if (g.ended) {
+      gameSummaryEl.textContent = "Game Over";
+    } else if (g.goalType === "rounds" && g.goalRounds > 0) {
+      gameSummaryEl.textContent = `${g.rounds.length} of ${g.goalRounds} Rounds`;
+    } else if (g.goalType === "points" && g.goalPoints > 0) {
+      const leader = Math.max(g.totals.blue, g.totals.red);
+      const remaining = Math.max(0, g.goalPoints - leader);
+      gameSummaryEl.textContent = `${leader} points, ${remaining} left to go`;
+    } else {
+      gameSummaryEl.textContent = `${g.rounds.length} Round${g.rounds.length !== 1 ? "s" : ""} played`;
+    }
 
     roundGridBody.innerHTML = "";
     // Compute cumulative totals per round
@@ -1396,6 +1405,9 @@
       cumRed += r.red;
       cumulTotals.push({ blue: cumBlue, red: cumRed });
     });
+
+    drawScoreGraph(cumulTotals);
+
     // Render in reverse order (latest round first)
     for (let idx = g.rounds.length - 1; idx >= 0; idx--) {
       const r = g.rounds[idx];
@@ -1417,6 +1429,62 @@
     }
 
     // Goal-reached check is handled by showScoreAnimation dismiss callback
+  }
+
+  function drawScoreGraph(cumulTotals) {
+    const canvas = scoreGraphCanvas;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+
+    if (!cumulTotals || cumulTotals.length === 0) return;
+
+    const pad = { top: 6, right: 6, bottom: 6, left: 6 };
+    const plotW = w - pad.left - pad.right;
+    const plotH = h - pad.top - pad.bottom;
+
+    const n = cumulTotals.length;
+    const maxVal = Math.max(1, ...cumulTotals.map(c => c.blue + c.red), ...cumulTotals.map(c => c.blue), ...cumulTotals.map(c => c.red));
+
+    function xFor(i) { return pad.left + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW); }
+    function yFor(v) { return pad.top + plotH - (v / maxVal) * plotH; }
+
+    function drawLine(data, color, lineWidth) {
+      ctx.beginPath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lineWidth;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      data.forEach((v, i) => {
+        const x = xFor(i), y = yFor(v);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
+    // Combined (yellow) — draw first so it's behind
+    const combined = cumulTotals.map(c => c.blue + c.red);
+    drawLine(combined, "rgba(251,191,36,0.4)", 1.5);
+
+    // Blue and Red lines
+    drawLine(cumulTotals.map(c => c.blue), "#4aa3ff", 2);
+    drawLine(cumulTotals.map(c => c.red), "#ff5b5b", 2);
+
+    // Draw dots at the latest point
+    const last = n - 1;
+    [[cumulTotals[last].blue, "#4aa3ff"], [cumulTotals[last].red, "#ff5b5b"]].forEach(([v, color]) => {
+      ctx.beginPath();
+      ctx.arc(xFor(last), yFor(v), 3, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+    });
   }
   
   // Pure number check — does not care whether the game is already marked ended
