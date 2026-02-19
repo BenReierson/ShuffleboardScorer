@@ -810,6 +810,15 @@
       const effR = effectivePuckRadius(puck.x, puck.y);
       const minClear = effR + (lineThickness / 2) + touchEpsilon;
 
+      // Min clearance from puck edge to any line or edge (for animation pause)
+      let minClearance = Infinity;
+      for (const edge of edges) {
+        minClearance = Math.min(minClearance, distancePointToSegment(center, edge.a, edge.b) - minClear);
+      }
+      for (const L of lines) {
+        minClearance = Math.min(minClearance, distancePointToSegment(center, L.p1, L.p2) - minClear);
+      }
+
       // Check outer triangle edges
       let touchesEdge = false;
       let edgeMargin = Infinity;
@@ -838,13 +847,13 @@
             }
           }
         }
-        results.push({ ...puck, points: 0, valid: false, zone: "out", effR, lineMargin: margin, altPoints });
+        results.push({ ...puck, points: 0, valid: false, zone: "out", effR, minClearance, lineMargin: margin, altPoints });
         continue;
       }
 
       // Must be inside triangle
       if (!pointInTri(center, A, B, C)) {
-        results.push({ ...puck, points: 0, valid: false, zone: "out", effR });
+        results.push({ ...puck, points: 0, valid: false, zone: "out", effR, minClearance });
         continue;
       }
 
@@ -867,7 +876,7 @@
               else altZone = -10;
             }
           }
-          results.push({ ...puck, points: 0, valid: false, zone: "line", effR, lineMargin, altPoints: altZone });
+          results.push({ ...puck, points: 0, valid: false, zone: "line", effR, minClearance, lineMargin, altPoints: altZone });
           zone = null;
           break;
         }
@@ -881,7 +890,7 @@
       }
 
       if (zone !== null) {
-        results.push({ ...puck, points: zone, valid: true, zone: `${zone}pt`, effR });
+        results.push({ ...puck, points: zone, valid: true, zone: `${zone}pt`, effR, minClearance });
       }
     }
 
@@ -1392,7 +1401,7 @@
     // Store individual puck scores for the breakdown display
     // Include all detected pucks; mark borderline ones (edge/line by <= 3px) as questionable
     const puckScores = scored.results.map(r => {
-      const base = { team: r.team, points: r.points };
+      const base = { team: r.team, points: r.points, x: r.x, y: r.y, effR: r.effR, minClearance: r.minClearance };
       if (r.lineMargin !== undefined && r.lineMargin <= 3 && r.altPoints && r.altPoints !== 0) {
         base.questionable = true;
         base.altPoints = r.altPoints;
@@ -1559,7 +1568,9 @@
     }
 
     const img = round.screenshot
-      ? `<img src="${round.screenshot}" style="width:100%;border-radius:12px;display:block;margin-bottom:18px;max-height:380px;object-fit:cover;" />`
+      ? `<div id="screenshotWrap" style="position:relative;overflow:hidden;border-radius:12px;margin-bottom:18px;">
+           <img id="screenshotImg" src="${round.screenshot}" style="width:100%;display:block;border-radius:12px;" />
+         </div>`
       : "";
 
     const pucks = round.puckScores || [];
@@ -1570,6 +1581,7 @@
     let dismissed = false;
     let animating = true;
     const pendingTimers = [];
+    const flyEls = [];  // Track flying puck elements for cleanup
 
     // Cancellable setTimeout wrapper
     function scheduleTimer(fn, ms) {
@@ -1671,6 +1683,7 @@
       if (animating || dismissed) return;
       dismissed = true;
       cancelAutoDismiss();
+      cleanupFlyEls();
       if (modal.parentNode) modal.remove();
       if (!undone) {
         const game = State.game;
@@ -1684,6 +1697,11 @@
       }
     }
 
+    function cleanupFlyEls() {
+      flyEls.forEach(el => { if (el.parentNode) el.remove(); });
+      flyEls.length = 0;
+    }
+
     function doUndo() {
       if (undone) return;
       undone = true;
@@ -1691,6 +1709,7 @@
       animating = false;
       cancelAllTimers();
       cancelAutoDismiss();
+      cleanupFlyEls();
       const game = State.game;
       if (game && roundNum - 1 < game.rounds.length) {
         const removed = game.rounds.splice(roundNum - 1);
@@ -1730,6 +1749,8 @@
     const totalsBlock     = modal.querySelector("#totalsBlock");
     const animBlueTotalEl = modal.querySelector("#animBlueTotal");
     const animRedTotalEl  = modal.querySelector("#animRedTotal");
+    const screenshotWrap  = modal.querySelector("#screenshotWrap");
+    const screenshotImg   = modal.querySelector("#screenshotImg");
     const remainLineEl    = modal.querySelector("#remainLine");
 
     // Recalculate round & game totals after a questionable puck toggle
@@ -1761,7 +1782,54 @@
       saveGame();
     }
 
-    // Reveal pucks one by one, then show team total
+    // Helper: map puck CSS coords to screenshot img display coords
+    function puckToImgCoords(p) {
+      if (!screenshotImg) return { x: 0, y: 0 };
+      const natW = screenshotImg.naturalWidth;
+      const natH = screenshotImg.naturalHeight;
+      const dispW = screenshotImg.clientWidth;
+      const dispH = screenshotImg.clientHeight;
+      return {
+        x: (p.x * devicePixelRatio / natW) * dispW,
+        y: (p.y * devicePixelRatio / natH) * dispH,
+        rW: (p.effR * devicePixelRatio / natW) * dispW,
+        rH: (p.effR * devicePixelRatio / natH) * dispH,
+      };
+    }
+
+    // Create a puck thumbnail element for the equation (circular crop + points badge)
+    function makePuckThumb(p, team) {
+      const thumb = document.createElement("div");
+      const size = 36;
+      const borderColor = team === "blue" ? "#4aa3ff" : "#ff5b5b";
+      const textColor = team === "blue" ? "#4aa3ff" : "#ff5b5b";
+      thumb.style.cssText = `display:inline-block;width:${size}px;height:${size}px;border-radius:50%;border:2px solid ${borderColor};position:relative;vertical-align:middle;overflow:hidden;flex-shrink:0;`;
+      if (round.screenshot && p.x !== undefined && screenshotImg) {
+        const natW = screenshotImg.naturalWidth;
+        const natH = screenshotImg.naturalHeight;
+        // Background zoom: show ~4x magnification centered on puck
+        const dispW = screenshotImg.clientWidth || 400;
+        const bgScale = 4;
+        const bgW = dispW * bgScale;
+        const bgH = (dispW * natH / natW) * bgScale;
+        const pxInSS = p.x * devicePixelRatio;
+        const pyInSS = p.y * devicePixelRatio;
+        const bgX = -(pxInSS / natW) * bgW + size / 2;
+        const bgY = -(pyInSS / natH) * bgH + size / 2;
+        thumb.style.backgroundImage = `url(${round.screenshot})`;
+        thumb.style.backgroundSize = `${bgW}px ${bgH}px`;
+        thumb.style.backgroundPosition = `${bgX}px ${bgY}px`;
+      }
+      // Points badge
+      const badge = document.createElement("div");
+      badge.style.cssText = `position:absolute;bottom:-1px;right:-1px;background:#0b1520;color:${textColor};font-size:11px;font-weight:800;padding:1px 4px;border-radius:6px;border:1px solid ${borderColor};line-height:1.1;`;
+      badge.textContent = p.points;
+      badge.className = "puck-badge";
+      thumb.appendChild(badge);
+      return { thumb, badge };
+    }
+
+    // Reveal pucks one by one with board-zoom animation, then show team total
     function revealTeam(puckList, team, equationEl, totalRowEl, totalEl, callback) {
       if (undone) return;
 
@@ -1796,8 +1864,10 @@
         }
 
         const p = puckList[idx];
+        const hasScreenshot = screenshotWrap && screenshotImg && p.x !== undefined;
+        const isCloseCall = p.minClearance !== undefined && p.minClearance < 5;
 
-        // Operator between pucks
+        // -- Equation slot: operator + puck thumbnail (hidden until animation lands) --
         if (idx > 0) {
           const op = document.createElement("span");
           op.style.cssText = "color:#4a5a6a";
@@ -1805,35 +1875,34 @@
           equationEl.appendChild(op);
         }
 
-        // Puck value
-        const val = document.createElement("span");
-        val.style.cssText = "font-weight:700;transform:scale(0);display:inline-block;transition:transform .2s ease-out";
-        val.textContent = (idx > 0 && p.points < 0) ? Math.abs(p.points) : p.points;
-        equationEl.appendChild(val);
+        const { thumb, badge } = makePuckThumb(p, team);
+        thumb.style.visibility = "hidden";
+        thumb.style.transition = "transform .25s ease-out, opacity .25s ease-out";
+        equationEl.appendChild(thumb);
 
         // Questionable puck — add '?' / '⎌' toggle button
+        let qBtn = null;
         if (p.questionable) {
-          const qBtn = document.createElement("button");
-          qBtn.style.cssText = "background:#3a3520;border:1px solid #7a6a30;color:#fbbf24;padding:1px 5px;border-radius:5px;font-size:13px;cursor:pointer;font-family:inherit;margin-left:2px;line-height:1;vertical-align:middle";
+          qBtn = document.createElement("button");
+          qBtn.style.cssText = "background:#3a3520;border:1px solid #7a6a30;color:#fbbf24;padding:1px 5px;border-radius:5px;font-size:13px;cursor:pointer;font-family:inherit;margin-left:2px;line-height:1;vertical-align:middle;opacity:0;transition:opacity .2s";
           qBtn.textContent = "?";
           equationEl.appendChild(qBtn);
 
           qBtn.addEventListener("click", (e) => {
             e.stopPropagation();
-            // Cancel auto-dismiss so user can review the change
             cancelAutoDismiss();
             bar.style.transitionDuration = "0s";
             bar.style.width = "100%";
             if (qBtn.textContent === "?") {
               p.points = p.altPoints;
-              val.textContent = p.altPoints;
+              badge.textContent = p.altPoints;
               qBtn.textContent = "\u238C";
               qBtn.style.background = "#1a3520";
               qBtn.style.borderColor = "#2a6b4a";
               qBtn.style.color = "#36d399";
             } else {
               p.points = 0;
-              val.textContent = "0";
+              badge.textContent = "0";
               qBtn.textContent = "?";
               qBtn.style.background = "#3a3520";
               qBtn.style.borderColor = "#7a6a30";
@@ -1843,11 +1912,123 @@
           });
         }
 
-        requestAnimationFrame(() => { val.style.transform = "scale(1)"; });
-
         playPuckSound(p.points);
-        idx++;
-        scheduleTimer(showNextPuck, 450);
+
+        if (!hasScreenshot) {
+          // Fallback: just show thumb directly (no animation)
+          thumb.style.transform = "scale(0)";
+          thumb.style.visibility = "visible";
+          requestAnimationFrame(() => {
+            thumb.style.transform = "scale(1)";
+            if (qBtn) qBtn.style.opacity = "1";
+          });
+          idx++;
+          scheduleTimer(showNextPuck, 600);
+          return;
+        }
+
+        // -- Animated puck reveal on screenshot --
+        // Use viewport-fixed positioning so flyEl isn't clipped by overflow
+        const imgCoords = puckToImgCoords(p);
+        const wrapRect = screenshotWrap.getBoundingClientRect();
+        const wrapW = wrapRect.width;
+        const wrapH = wrapRect.height;
+
+        // a) Create floating overlay at puck position (fixed to viewport)
+        const flyEl = document.createElement("div");
+        const puckDispR = Math.max(12, (imgCoords.rW + imgCoords.rH) / 2);
+        const startSize = puckDispR * 2.5;
+        Object.assign(flyEl.style, {
+          position: "fixed",
+          left: (wrapRect.left + imgCoords.x - startSize / 2) + "px",
+          top: (wrapRect.top + imgCoords.y - startSize / 2) + "px",
+          width: startSize + "px",
+          height: startSize + "px",
+          borderRadius: "50%",
+          overflow: "hidden",
+          zIndex: "1100",
+          border: `2px solid ${team === "blue" ? "#4aa3ff" : "#ff5b5b"}`,
+          boxShadow: `0 0 12px ${team === "blue" ? "rgba(74,163,255,0.5)" : "rgba(255,91,91,0.5)"}`,
+          transition: "all 500ms cubic-bezier(0.25, 0.1, 0.25, 1)",
+          backgroundImage: `url(${round.screenshot})`,
+          backgroundRepeat: "no-repeat",
+        });
+
+        // Set background to show the puck area (zoomed in)
+        const natW = screenshotImg.naturalWidth;
+        const natH = screenshotImg.naturalHeight;
+        const pxSS = p.x * devicePixelRatio;
+        const pySS = p.y * devicePixelRatio;
+
+        function setBgForSize(elW, elH, zoom) {
+          const bgW = wrapW * zoom;
+          const bgH = wrapH * zoom;
+          const bgX = -(pxSS / natW) * bgW + elW / 2;
+          const bgY = -(pySS / natH) * bgH + elH / 2;
+          flyEl.style.backgroundSize = `${bgW}px ${bgH}px`;
+          flyEl.style.backgroundPosition = `${bgX}px ${bgY}px`;
+        }
+
+        // Start zoomed in tight on the puck
+        const startZoom = 6;
+        setBgForSize(startSize, startSize, startZoom);
+        document.body.appendChild(flyEl);
+        flyEls.push(flyEl);
+
+        // b) Zoom out to show context (fill screenshot area)
+        scheduleTimer(() => {
+          if (undone) { flyEl.remove(); return; }
+          const endZoom = 3;
+          flyEl.style.borderRadius = "12px";
+          flyEl.style.left = wrapRect.left + "px";
+          flyEl.style.top = wrapRect.top + "px";
+          flyEl.style.width = wrapW + "px";
+          flyEl.style.height = wrapH + "px";
+          setBgForSize(wrapW, wrapH, endZoom);
+        }, 50);
+
+        // c) After zoom completes, pause if close call, then fly to equation
+        const pauseDuration = isCloseCall ? 1500 : 0;
+        const afterZoomDelay = 550 + pauseDuration;
+
+        scheduleTimer(() => {
+          if (undone) { flyEl.remove(); return; }
+
+          // d) Get target position in equation for the fly animation
+          const thumbRect = thumb.getBoundingClientRect();
+          const targetSize = 36;
+
+          flyEl.style.transition = "all 600ms cubic-bezier(0.25, 0.1, 0.25, 1)";
+          flyEl.style.borderRadius = "50%";
+          flyEl.style.left = thumbRect.left + "px";
+          flyEl.style.top = thumbRect.top + "px";
+          flyEl.style.width = targetSize + "px";
+          flyEl.style.height = targetSize + "px";
+          flyEl.style.boxShadow = "none";
+          flyEl.style.border = "none";
+          flyEl.style.opacity = "0.5";
+
+          // Zoom background for thumbnail size
+          const thumbZoom = 4;
+          const bgW = wrapW * thumbZoom;
+          const bgH = wrapH * thumbZoom;
+          const bgX = -(pxSS / natW) * bgW + targetSize / 2;
+          const bgY = -(pySS / natH) * bgH + targetSize / 2;
+          flyEl.style.backgroundSize = `${bgW}px ${bgH}px`;
+          flyEl.style.backgroundPosition = `${bgX}px ${bgY}px`;
+
+          // e) After fly completes, show the equation thumb and remove flyEl
+          scheduleTimer(() => {
+            if (undone) { flyEl.remove(); return; }
+            flyEl.remove();
+            thumb.style.visibility = "visible";
+            thumb.style.transform = "scale(1)";
+            if (qBtn) qBtn.style.opacity = "1";
+
+            idx++;
+            scheduleTimer(showNextPuck, 200);
+          }, 650);
+        }, afterZoomDelay);
       }
 
       scheduleTimer(showNextPuck, 300);
