@@ -1861,8 +1861,8 @@
     }
 
     const img = round.screenshot
-      ? `<div id="screenshotWrap" style="position:relative;overflow:hidden;border-radius:12px;margin-bottom:18px;">
-           <img id="screenshotImg" src="${round.screenshot}" style="width:100%;display:block;border-radius:12px;" />
+      ? `<div id="screenshotWrap" style="position:relative;overflow:hidden;border-radius:12px;margin-bottom:18px;height:auto;">
+           <img id="screenshotImg" src="${round.screenshot}" style="width:100%;height:auto;display:block;border-radius:12px;" />
          </div>`
       : "";
 
@@ -2559,7 +2559,7 @@
 
   function showRoundPopup(round, roundNum) {
     const img = round.screenshot
-      ? `<img src="${round.screenshot}" style="width:100%;border-radius:10px;display:block;margin-bottom:14px;" />`
+      ? `<img src="${round.screenshot}" style="width:100%;height:auto;border-radius:10px;display:block;margin-bottom:14px;" />`
       : `<div style="color:#9fb0c2;margin-bottom:14px;text-align:center">No screenshot</div>`;
     const eqImg = round.equationScreenshot
       ? `<img src="${round.equationScreenshot}" style="width:100%;border-radius:10px;display:block;margin-bottom:14px;" />`
