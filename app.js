@@ -37,6 +37,39 @@
   const chkSfx = $("#chkSfx");
   if (chkSfx) chkSfx.addEventListener("change", () => { soundEnabled = chkSfx.checked; });
 
+  // ArUco drift compensation toggle — off by default, lazy-loads libraries
+  let driftFeatureEnabled = false;
+  let _arucoLibsLoaded = false;
+  let _arucoLibsLoading = false;
+  const chkDrift = $("#chkDrift");
+
+  function loadArucoLibs() {
+    if (_arucoLibsLoaded || _arucoLibsLoading) return Promise.resolve();
+    _arucoLibsLoading = true;
+    return new Promise((resolve) => {
+      const s1 = document.createElement("script");
+      s1.src = "https://cdn.jsdelivr.net/gh/damianofalcioni/js-aruco2@master/src/cv.js";
+      s1.onload = () => {
+        const s2 = document.createElement("script");
+        s2.src = "https://cdn.jsdelivr.net/gh/damianofalcioni/js-aruco2@master/src/aruco.js";
+        s2.onload = () => { _arucoLibsLoaded = true; _arucoLibsLoading = false; resolve(); };
+        s2.onerror = () => { _arucoLibsLoading = false; resolve(); };
+        document.head.appendChild(s2);
+      };
+      s1.onerror = () => { _arucoLibsLoading = false; resolve(); };
+      document.head.appendChild(s1);
+    });
+  }
+
+  if (chkDrift) chkDrift.addEventListener("change", () => {
+    driftFeatureEnabled = chkDrift.checked;
+    if (driftFeatureEnabled) {
+      loadArucoLibs();
+    } else {
+      resetDrift();
+    }
+  });
+
   // Short pitched tick — freq escalates as progress goes from 0→1
   function playTick(progress) {
     if (!soundEnabled) return;
@@ -592,6 +625,7 @@
   const ARUCO_MAX_DIM = 640;
 
   function detectArucoMarker() {
+    if (!driftFeatureEnabled || !_arucoLibsLoaded) return null;
     const detector = getArucoDetector();
     if (!detector) return null;
 
@@ -1297,16 +1331,21 @@
     if (btnFinish) btnFinish.onclick = () => {
       saveConfig();
 
-      // Attempt ArUco marker detection for drift compensation
-      const marker = detectArucoMarker();
-      if (marker) {
-        State.drift.enabled = true;
-        State.drift.ref = { x: marker.center.x, y: marker.center.y };
-        State.drift.markerId = marker.id;
-        State.drift.offset = { x: 0, y: 0 };
-        State.drift.markerVisible = true;
-        State.drift.lastDetectTs = 0;
-        State.drift.missCount = 0;
+      // Attempt ArUco marker detection for drift compensation (only if feature enabled)
+      let marker = null;
+      if (driftFeatureEnabled) {
+        marker = detectArucoMarker();
+        if (marker) {
+          State.drift.enabled = true;
+          State.drift.ref = { x: marker.center.x, y: marker.center.y };
+          State.drift.markerId = marker.id;
+          State.drift.offset = { x: 0, y: 0 };
+          State.drift.markerVisible = true;
+          State.drift.lastDetectTs = 0;
+          State.drift.missCount = 0;
+        } else {
+          resetDrift();
+        }
       } else {
         resetDrift();
       }
@@ -2765,7 +2804,7 @@
     // Tolerate up to 6 consecutive misses (~3s) before declaring marker lost,
     // since ArUco detection can fail intermittently due to motion blur,
     // compression artifacts, or lighting changes.
-    if (State.drift.enabled && (now - State.drift.lastDetectTs > 500)) {
+    if (driftFeatureEnabled && State.drift.enabled && (now - State.drift.lastDetectTs > 500)) {
       State.drift.lastDetectTs = now;
       const marker = detectArucoMarker();
       if (marker && marker.id === State.drift.markerId) {

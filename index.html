@@ -15,6 +15,10 @@
       <input type="checkbox" id="chkSfx" checked />
       <span>SFX</span>
     </label>
+    <label class="sfxToggle" title="Toggle ArUco marker drift compensation">
+      <input type="checkbox" id="chkDrift" />
+      <span>Drift</span>
+    </label>
     <button class="btn ghost" id="btnRecalibrate" title="Adjust calibration">Recalibrate</button>
     <button class="btn ghost" id="btnTest" title="Load a test image">Test</button>
     <input type="file" id="testImageInput" accept="image/*" class="hidden" />
@@ -76,8 +80,6 @@
   </main>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/gh/damianofalcioni/js-aruco2@master/src/cv.js"></script>
-  <script src="https://cdn.jsdelivr.net/gh/damianofalcioni/js-aruco2@master/src/aruco.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
