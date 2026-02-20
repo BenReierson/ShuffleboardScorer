@@ -1861,8 +1861,8 @@
     }
 
     const img = round.screenshot
-      ? `<div id="screenshotWrap" style="position:relative;overflow:hidden;border-radius:12px;margin-bottom:18px;height:auto;">
-           <img id="screenshotImg" src="${round.screenshot}" style="width:100%;height:auto;display:block;border-radius:12px;" />
+      ? `<div id="screenshotWrap" style="position:relative;overflow:hidden;border-radius:12px;margin-bottom:18px;height:380px;">
+           <img id="screenshotImg" src="${round.screenshot}" style="width:100%; height:100%; object-fit:cover; object-position:center; display:block; border-radius:12px;" />
          </div>`
       : "";
 
@@ -2193,7 +2193,7 @@
         const natW = screenshotImg.naturalWidth;
         const natH = screenshotImg.naturalHeight;
         const dispW = screenshotImg.clientWidth || 400;
-        const bgScale = 2.5;
+        const bgScale = 1.5;
         const bgW = dispW * bgScale;
         const bgH = (dispW * natH / natW) * bgScale;
         const pxInSS = p.x * devicePixelRatio;
