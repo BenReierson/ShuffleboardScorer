@@ -2188,12 +2188,12 @@
       const thumb = document.createElement("div");
       const size = 36;
       const borderColor = team === "blue" ? "#4aa3ff" : "#ff5b5b";
-      thumb.style.cssText = `display:inline-block;width:${size}px;height:${size}px;border-radius:50%;border:2px solid ${borderColor};position:relative;vertical-align:middle;overflow:hidden;flex-shrink:0;cursor:pointer;`;
+      thumb.style.cssText = `display:inline-block;width:${size}px;height:${size}px;border-radius:50%;border:0px solid ${borderColor};position:center;vertical-align:middle;overflow:hidden;flex-shrink:0;cursor:pointer;`;
       if (round.screenshot && p.x !== undefined && screenshotImg) {
         const natW = screenshotImg.naturalWidth;
         const natH = screenshotImg.naturalHeight;
         const dispW = screenshotImg.clientWidth || 400;
-        const bgScale = 1.5;
+        const bgScale = 2;
         const bgW = dispW * bgScale;
         const bgH = (dispW * natH / natW) * bgScale;
         const pxInSS = p.x * devicePixelRatio;
