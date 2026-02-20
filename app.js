@@ -2,7 +2,7 @@
 // Direct detection of red/blue puck plastic (no stickers needed!)
 
 (() => {
-  const BUILD = "v0.30";
+  const BUILD = "v0.31";
   
   const $ = (sel) => document.querySelector(sel);
   const video = $("#video");
