@@ -272,6 +272,15 @@
     detectCache: { ts: 0, pucks: [] },
     testImage: null,
     loopRunning: false,
+    drift: {
+      enabled: false,
+      ref: null,
+      offset: { x: 0, y: 0 },
+      markerId: null,
+      markerVisible: true,
+      lastDetectTs: 0,
+      missCount: 0,
+    },
   };
 
   function loadHistory() {
@@ -563,6 +572,94 @@
     const scale = 1 - p * r * r;
     return { x: cx + dx * scale, y: cy + dy * scale };
   }
+  // ========== ARUCO MARKER DRIFT COMPENSATION ==========
+  let _arucoDetector = null;
+  function getArucoDetector() {
+    if (!_arucoDetector) {
+      if (typeof AR !== "undefined" && AR.Detector) {
+        _arucoDetector = new AR.Detector();
+      }
+    }
+    return _arucoDetector;
+  }
+
+  // Dedicated canvas for ArUco detection — draws the video source at native
+  // resolution (not scaled up by devicePixelRatio) so that the js-aruco2
+  // adaptive thresholding works reliably.  The work canvas is 2x on retina
+  // displays, which can push the detector outside its reliable operating range.
+  let _arucoCanvas = null;
+  let _arucoCtx = null;
+  const ARUCO_MAX_DIM = 640;
+
+  function detectArucoMarker() {
+    const detector = getArucoDetector();
+    if (!detector) return null;
+
+    const src = getSource();
+    const srcW = src.videoWidth || src.naturalWidth;
+    const srcH = src.videoHeight || src.naturalHeight;
+    if (!srcW || !srcH) return null;
+
+    // Scale down to at most ARUCO_MAX_DIM on the longest side
+    const scale = Math.min(1, ARUCO_MAX_DIM / Math.max(srcW, srcH));
+    const aW = Math.round(srcW * scale);
+    const aH = Math.round(srcH * scale);
+
+    if (!_arucoCanvas) {
+      _arucoCanvas = document.createElement("canvas");
+      _arucoCtx = _arucoCanvas.getContext("2d", { willReadFrequently: true });
+    }
+    if (_arucoCanvas.width !== aW || _arucoCanvas.height !== aH) {
+      _arucoCanvas.width = aW;
+      _arucoCanvas.height = aH;
+    }
+
+    try { _arucoCtx.drawImage(src, 0, 0, aW, aH); } catch { return null; }
+
+    let imageData;
+    try { imageData = _arucoCtx.getImageData(0, 0, aW, aH); } catch { return null; }
+
+    let markers;
+    try { markers = detector.detect(imageData); } catch { return null; }
+    if (!markers || markers.length === 0) return null;
+
+    const m = markers[0];
+    const ax = (m.corners[0].x + m.corners[1].x + m.corners[2].x + m.corners[3].x) / 4;
+    const ay = (m.corners[0].y + m.corners[1].y + m.corners[2].y + m.corners[3].y) / 4;
+
+    // Map from aruco-canvas coords → overlay CSS-pixel coords via the
+    // letterbox rect that positions the video inside the overlay canvas.
+    const vr = getVideoRect();
+    const cssX = (vr.x + ax * vr.w / aW) / devicePixelRatio;
+    const cssY = (vr.y + ay * vr.h / aH) / devicePixelRatio;
+
+    return { id: m.id, center: { x: cssX, y: cssY } };
+  }
+
+  function getDriftedGeometry() {
+    const cfg = State.config;
+    const d = State.drift;
+    if (!d.enabled || (d.offset.x === 0 && d.offset.y === 0)) {
+      return { tri: cfg.tri, lines: cfg.lines };
+    }
+    const ox = d.offset.x, oy = d.offset.y;
+    const shift = (p) => ({ x: p.x + ox, y: p.y + oy });
+    return {
+      tri: { A: shift(cfg.tri.A), B: shift(cfg.tri.B), C: shift(cfg.tri.C) },
+      lines: cfg.lines.map(L => ({ p1: shift(L.p1), p2: shift(L.p2) })),
+    };
+  }
+
+  function resetDrift() {
+    State.drift.enabled = false;
+    State.drift.ref = null;
+    State.drift.offset = { x: 0, y: 0 };
+    State.drift.markerId = null;
+    State.drift.markerVisible = true;
+    State.drift.lastDetectTs = 0;
+    State.drift.missCount = 0;
+  }
+
   function rgbToHsv(r,g,b){
     r/=255; g/=255; b/=255;
     const max = Math.max(r,g,b), min = Math.min(r,g,b);
@@ -650,7 +747,8 @@
     let At, Bt, Ct;
     if (useROI) {
       ensureTipIsC();
-      const A = cfg.tri.A, B = cfg.tri.B, C = cfg.tri.C;
+      const geo = getDriftedGeometry();
+      const A = geo.tri.A, B = geo.tri.B, C = geo.tri.C;
       At = { x: A.x * devicePixelRatio, y: A.y * devicePixelRatio };
       Bt = { x: B.x * devicePixelRatio, y: B.y * devicePixelRatio };
       Ct = { x: C.x * devicePixelRatio, y: C.y * devicePixelRatio };
@@ -837,7 +935,9 @@
   // ========== SCORING ==========
   function scoreRound(pucks) {
     ensureTipIsC();
-    const { tri, lines, lineThickness, touchEpsilon } = State.config;
+    const { lineThickness, touchEpsilon } = State.config;
+    const geo = getDriftedGeometry();
+    const { tri, lines } = geo;
     const { A, B, C } = tri;
 
     const edges = [
@@ -1196,14 +1296,33 @@
     const btnFinish = $("#btnFinish");
     if (btnFinish) btnFinish.onclick = () => {
       saveConfig();
+
+      // Attempt ArUco marker detection for drift compensation
+      const marker = detectArucoMarker();
+      if (marker) {
+        State.drift.enabled = true;
+        State.drift.ref = { x: marker.center.x, y: marker.center.y };
+        State.drift.markerId = marker.id;
+        State.drift.offset = { x: 0, y: 0 };
+        State.drift.markerVisible = true;
+        State.drift.lastDetectTs = 0;
+        State.drift.missCount = 0;
+      } else {
+        resetDrift();
+      }
+
       const savedGame = loadGame();
       if (savedGame && !savedGame.ended) {
         State.game = savedGame;
         State.mode = "game";
-        hintText.textContent = "Calibration updated — game resumed!";
+        hintText.textContent = marker
+          ? "Calibration updated — game resumed! Drift tracking active (marker #" + marker.id + ")"
+          : "Calibration updated — game resumed!";
       } else {
         State.mode = "ready";
-        hintText.textContent = "Calibration complete!";
+        hintText.textContent = marker
+          ? "Calibration complete! Drift tracking active (marker #" + marker.id + ")"
+          : "Calibration complete!";
       }
       updateScoreboard();
       render();
@@ -1602,6 +1721,7 @@
   
   $("#btnRecalibrate").onclick = () => {
     saveGame();
+    resetDrift();
     State.mode = "calibrate_triangle";
     render();
   };
@@ -1615,6 +1735,7 @@
     }
     State.game = null;
     clearSavedGame();
+    resetDrift();
     State.config = defaultConfig();
     saveConfig();
     State.mode = "calibrate_triangle";
@@ -1633,6 +1754,8 @@
       video.style.display = "";
       btnTest.textContent = "Test";
       State.detectCache = { ts: 0, pucks: [] };
+      statusPill.style.cursor = "";
+      statusPill.onclick = null;
       if (video.srcObject) setStatus("Camera OK", "ok");
       else setStatus("Camera blocked", "bad");
     } else {
@@ -1650,6 +1773,8 @@
       video.style.display = "none";
       btnTest.textContent = "Camera";
       setStatus("Test Image", "warn");
+      statusPill.style.cursor = "pointer";
+      statusPill.onclick = () => testImageInput.click();
       // Ensure the render loop is running (camera may have failed)
       if (!State.loopRunning) {
         State.loopRunning = true;
@@ -1734,12 +1859,13 @@
     modal.innerHTML = `
       <div id="scoreAnim" style="
         background:#0b1520; border:1px solid #223140; border-radius:20px;
-        padding:28px 32px; text-align:center; width:min(42vw,520px);
+        padding:28px 32px; text-align:center; width:min(46vw,572px);
         font-family:-apple-system,system-ui,sans-serif; color:#e7eef7;
         max-height:95vh; overflow-y:auto; position:relative;
       ">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
           <div style="font-size:16px;letter-spacing:1.5px;color:#9fb0c2;text-transform:uppercase;font-weight:700">Round ${roundNum}</div>
+          <div style="font-size:11px;color:#4a5a6a">Spacebar or wait to continue, Escape to undo</div>
           <button id="btnUndoScoreAnim" style="
             background:#401a1a;border:1px solid #6a2b2b;color:#ffd2d8;
             padding:6px 16px;border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit;
@@ -1780,7 +1906,6 @@
           <div id="remainLine" style="padding:10px;font-size:20px;font-weight:700;color:#fbbf24;background:#0e1c2c;letter-spacing:.5px"></div>
         </div>
 
-        <div style="font-size:11px;color:#4a5a6a;margin-bottom:8px">Spacebar or wait to continue, Escape to undo</div>
         <div style="height:4px;background:#1e3040;border-radius:2px;overflow:hidden">
           <div id="autoDismissBar" style="height:100%;width:100%;background:#4aa3ff;border-radius:2px;transition:width linear"></div>
         </div>
@@ -1867,12 +1992,6 @@
           return;
         }
         puckList.forEach((p, i) => {
-          if (i > 0) {
-            const op = document.createElement("span");
-            op.style.cssText = "color:#4a5a6a";
-            op.textContent = p.points < 0 ? "\u2212" : "+";
-            equationEl.appendChild(op);
-          }
           const thumb = makePuckThumb(p, team);
           equationEl.appendChild(thumb);
           thumb.addEventListener("click", (e) => {
@@ -2147,14 +2266,7 @@
         const hasScreenshot = screenshotWrap && screenshotImg && p.x !== undefined;
         const isCloseCall = p.minClearance !== undefined && p.minClearance < 5;
 
-        // -- Equation slot: operator + puck thumbnail (hidden until animation lands) --
-        if (idx > 0) {
-          const op = document.createElement("span");
-          op.style.cssText = "color:#4a5a6a";
-          op.textContent = p.points < 0 ? "\u2212" : "+";
-          equationEl.appendChild(op);
-        }
-
+        // -- Equation slot: puck thumbnail (hidden until animation lands) --
         const thumb = makePuckThumb(p, team);
         thumb.style.visibility = "hidden";
         thumb.style.transition = "transform .25s ease-out, opacity .25s ease-out";
@@ -2646,19 +2758,43 @@
     const now = performance.now();
     const interval = 300;
     if (now - State.detectCache.ts < interval) return State.detectCache;
-    
+
     const pucks = detectPucks();
+
+    // ArUco drift tracking — piggyback on detection cycle, throttle to ~500ms
+    // Tolerate up to 6 consecutive misses (~3s) before declaring marker lost,
+    // since ArUco detection can fail intermittently due to motion blur,
+    // compression artifacts, or lighting changes.
+    if (State.drift.enabled && (now - State.drift.lastDetectTs > 500)) {
+      State.drift.lastDetectTs = now;
+      const marker = detectArucoMarker();
+      if (marker && marker.id === State.drift.markerId) {
+        State.drift.offset = {
+          x: marker.center.x - State.drift.ref.x,
+          y: marker.center.y - State.drift.ref.y,
+        };
+        State.drift.markerVisible = true;
+        State.drift.missCount = 0;
+      } else {
+        // Keep last known offset; only declare lost after sustained misses
+        State.drift.missCount++;
+        if (State.drift.missCount >= 6) {
+          State.drift.markerVisible = false;
+        }
+      }
+    }
+
     let scored = null;
     if (State.mode !== "calibrate_triangle") {
       scored = scoreRound(pucks);
     }
-    
+
     // Update hint with detection stats
     if (State.mode === "calibrate_colors" && pucks._debug) {
       const d = pucks._debug;
       hintText.textContent = `Found: ${d.redBlobs} red blobs → ${d.redPucks} pucks | ${d.blueBlobs} blue blobs → ${d.bluePucks} pucks`;
     }
-    
+
     State.detectCache = { ts: now, pucks, scored };
     return State.detectCache;
   }
@@ -2697,22 +2833,26 @@
     const cfg = State.config;
     const t = cfg.lineThickness * devicePixelRatio;
     const r = cfg.puckRadius * devicePixelRatio;
-    
+
+    // Use drifted geometry for rendering (except during calibration)
+    const isCalibrating = State.mode.startsWith("calibrate");
+    const geo = isCalibrating ? { tri: cfg.tri, lines: cfg.lines } : getDriftedGeometry();
+
     // Draw triangle
-    const A = scale(cfg.tri.A), B = scale(cfg.tri.B), C = scale(cfg.tri.C);
+    const A = scale(geo.tri.A), B = scale(geo.tri.B), C = scale(geo.tri.C);
     ctx.lineWidth = t;
-    ctx.strokeStyle = "rgba(255,255,255,0.7)";
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
     ctx.beginPath();
     ctx.moveTo(A.x, A.y);
     ctx.lineTo(B.x, B.y);
     ctx.lineTo(C.x, C.y);
     ctx.closePath();
     ctx.stroke();
-    
+
     // Draw boundary lines
     if (State.mode !== "calibrate_triangle") {
       ctx.strokeStyle = "rgba(54,211,153,0.8)";
-      cfg.lines.forEach(L => {
+      geo.lines.forEach(L => {
         const p1 = scale(L.p1), p2 = scale(L.p2);
         ctx.beginPath();
         ctx.moveTo(p1.x, p1.y);
@@ -2882,6 +3022,29 @@
         ctx.fillText(label, cx, cy);
         ctx.restore();
       }
+    }
+
+    // Drift status indicator
+    if (State.drift.enabled && !isCalibrating) {
+      const mag = Math.hypot(State.drift.offset.x, State.drift.offset.y);
+      const lost = !State.drift.markerVisible;
+      const driftLabel = lost
+        ? `Drift: ${mag.toFixed(1)}px (marker lost)`
+        : `Drift: ${mag.toFixed(1)}px`;
+      ctx.save();
+      const fs = 11 * devicePixelRatio;
+      ctx.font = `bold ${fs}px system-ui`;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "bottom";
+      const tx = 10 * devicePixelRatio;
+      const ty = H - 10 * devicePixelRatio;
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      const tm = ctx.measureText(driftLabel);
+      const pad = 4 * devicePixelRatio;
+      ctx.fillRect(tx - pad, ty - fs - pad, tm.width + pad * 2, fs + pad * 2);
+      ctx.fillStyle = lost ? "#facc15" : "#4ade80";
+      ctx.fillText(driftLabel, tx, ty);
+      ctx.restore();
     }
   }
   
