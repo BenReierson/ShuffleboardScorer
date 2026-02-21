@@ -1421,15 +1421,17 @@
     if (btnCancel) btnCancel.onclick = () => { State.mode = "ready"; render(); };
     
     const btnBegin = $("#btnBeginGame");
-    if (btnBegin) btnBegin.onclick = () => {
+    if (btnBegin) btnBegin.onclick = async () => {
       const goalType   = State._setupGoalType   ?? "points";
       const goalPoints = goalType === "points" ? (State._setupGoalPoints ?? 75) : 0;
       const goalRounds = goalType === "rounds" ? (State._setupGoalRounds ?? 5)  : 0;
+      const firstTeam = await showFirstTeamPopup();
       State.game = {
         id: Date.now(),
         goalType,
         goalPoints,
         goalRounds,
+        firstTeam,
         rounds: [],
         totals: { red:0, blue:0 },
         startedAt: Date.now(),
@@ -1548,7 +1550,7 @@
     if (!g) {
       blueTotalEl.textContent = "0";
       redTotalEl.textContent = "0";
-      gameSummaryEl.textContent = "Not started";
+      gameSummaryEl.innerHTML = "Not started";
       roundGridBody.innerHTML = "";
       drawScoreGraph(null);
       return;
@@ -1557,17 +1559,43 @@
     redTotalEl.textContent = String(g.totals.red);
 
     // Status text
+    let statusText = "";
     if (g.ended) {
-      gameSummaryEl.textContent = "Game Over";
+      statusText = "Game Over";
     } else if (g.goalType === "rounds" && g.goalRounds > 0) {
-      gameSummaryEl.textContent = `${g.rounds.length} of ${g.goalRounds} Rounds`;
+      statusText = `${g.rounds.length} of ${g.goalRounds} Rounds`;
     } else if (g.goalType === "points" && g.goalPoints > 0) {
       const leader = Math.max(g.totals.blue, g.totals.red);
       const remaining = Math.max(0, g.goalPoints - leader);
-      gameSummaryEl.textContent = `${leader} points, ${remaining} left to go`;
+      statusText = `${leader} points, ${remaining} left to go`;
     } else {
-      gameSummaryEl.textContent = `${g.rounds.length} Round${g.rounds.length !== 1 ? "s" : ""} played`;
+      statusText = `${g.rounds.length} Round${g.rounds.length !== 1 ? "s" : ""} played`;
     }
+
+    // First-team indicator: winner of last round goes first, ties go to the team that didn't go first
+    let firstIndicator = "";
+    if (g.firstTeam && !g.ended) {
+      let currentFirst = g.firstTeam;
+      if (g.rounds.length > 0) {
+        const lastRound = g.rounds[g.rounds.length - 1];
+        // Determine who went first last round by walking the chain
+        let prevFirst = g.firstTeam;
+        for (let i = 0; i < g.rounds.length - 1; i++) {
+          const r = g.rounds[i];
+          if (r.blue > r.red) prevFirst = "blue";
+          else if (r.red > r.blue) prevFirst = "red";
+          else prevFirst = prevFirst === "blue" ? "red" : "blue"; // tie: swap
+        }
+        // Now prevFirst is who went first in the last round
+        if (lastRound.blue > lastRound.red) currentFirst = "blue";
+        else if (lastRound.red > lastRound.blue) currentFirst = "red";
+        else currentFirst = prevFirst === "blue" ? "red" : "blue"; // tie: other team
+      }
+      const color = currentFirst === "blue" ? "#4aa3ff" : "#ff5b5b";
+      const label = currentFirst.charAt(0).toUpperCase() + currentFirst.slice(1);
+      firstIndicator = ` <span style="margin-left:8px;display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;border-radius:999px;background:${currentFirst === 'blue' ? '#1a2e42' : '#3a1a1a'};border:1px solid ${color}40;color:${color}"><span style="width:6px;height:6px;border-radius:50%;background:${color};display:inline-block"></span>${label} first</span>`;
+    }
+    gameSummaryEl.innerHTML = statusText + firstIndicator;
 
     roundGridBody.innerHTML = "";
     // Compute cumulative totals per round
@@ -1841,6 +1869,158 @@
   };
 
   // ========== POPUPS ==========
+
+  function showFirstTeamPopup() {
+    return new Promise((resolve) => {
+      const teams = ["blue", "red"];
+      let selected = null;
+      let spinning = true;
+      let spinIdx = 0;
+      let spinInterval = null;
+      let resolved = false;
+
+      function done(team) {
+        if (resolved) return;
+        resolved = true;
+        spinning = false;
+        if (spinInterval) { clearInterval(spinInterval); spinInterval = null; }
+        cleanup();
+        backdrop.remove();
+        resolve(team);
+      }
+
+      const backdrop = document.createElement("div");
+      Object.assign(backdrop.style, {
+        position:"fixed", inset:"0", background:"rgba(0,0,0,0.85)",
+        zIndex:"1000", display:"flex", alignItems:"center", justifyContent:"center",
+        padding:"16px", boxSizing:"border-box",
+      });
+
+      const box = document.createElement("div");
+      Object.assign(box.style, {
+        background:"#121a22", borderRadius:"18px", border:"1px solid #223140",
+        padding:"32px 40px", textAlign:"center", maxWidth:"420px", width:"100%",
+      });
+
+      const title = document.createElement("div");
+      title.textContent = "Who goes first?";
+      Object.assign(title.style, {
+        fontSize:"22px", fontWeight:"700", color:"#e7eef7", marginBottom:"24px",
+      });
+      box.appendChild(title);
+
+      const cardsRow = document.createElement("div");
+      Object.assign(cardsRow.style, {
+        display:"flex", gap:"16px", justifyContent:"center", marginBottom:"24px",
+      });
+
+      const teamColors = { blue:"#4aa3ff", red:"#ff5b5b" };
+      const teamBorders = { blue:"#234562", red:"#5a2a2a" };
+      const cards = {};
+
+      teams.forEach((team) => {
+        const card = document.createElement("div");
+        Object.assign(card.style, {
+          flex:"1", padding:"24px 16px", borderRadius:"14px",
+          border:`3px solid ${teamBorders[team]}`, background:"#0f1620",
+          cursor:"pointer", transition:"all 0.15s ease",
+          display:"flex", flexDirection:"column", alignItems:"center", gap:"8px",
+        });
+        const label = document.createElement("div");
+        label.textContent = team.charAt(0).toUpperCase() + team.slice(1);
+        Object.assign(label.style, {
+          fontSize:"28px", fontWeight:"800", color:teamColors[team],
+        });
+        const dot = document.createElement("div");
+        Object.assign(dot.style, {
+          width:"48px", height:"48px", borderRadius:"50%",
+          background:teamColors[team], opacity:"0.3", transition:"all 0.15s ease",
+        });
+        card.appendChild(label);
+        card.appendChild(dot);
+        card.onclick = () => {
+          spinning = false;
+          if (spinInterval) { clearInterval(spinInterval); spinInterval = null; }
+          selected = team;
+          updateHighlight();
+          playTick(0.8);
+        };
+        cards[team] = { card, dot };
+        cardsRow.appendChild(card);
+      });
+      box.appendChild(cardsRow);
+
+      const hint = document.createElement("div");
+      hint.innerHTML = "<b>Space</b> to confirm &middot; <b>Esc</b> to pick the other team &middot; or <b>click</b> a team";
+      Object.assign(hint.style, {
+        fontSize:"12px", color:"#9fb0c2", lineHeight:"1.5",
+      });
+      box.appendChild(hint);
+      backdrop.appendChild(box);
+      document.body.appendChild(backdrop);
+
+      function updateHighlight() {
+        teams.forEach((t) => {
+          const { card, dot } = cards[t];
+          const active = selected === t;
+          card.style.borderColor = active ? teamColors[t] : teamBorders[t];
+          card.style.transform = active ? "scale(1.08)" : "scale(1)";
+          dot.style.opacity = active ? "1" : "0.3";
+          dot.style.transform = active ? "scale(1.2)" : "scale(1)";
+        });
+      }
+
+      // Spin animation: rapidly alternate highlight, then slow down and stop
+      let spinSpeed = 80;
+      let spinCount = 0;
+      const totalSpins = 15 + Math.floor(Math.random() * 10); // 15-24 flips
+      const finalTeam = teams[Math.floor(Math.random() * 2)];
+
+      function doSpin() {
+        if (!spinning || resolved) return;
+        spinCount++;
+        const isLast = spinCount >= totalSpins;
+        selected = isLast ? finalTeam : teams[spinCount % 2];
+        updateHighlight();
+        playTick(Math.min(1, spinCount / totalSpins));
+
+        if (isLast) {
+          spinning = false;
+          if (spinInterval) { clearInterval(spinInterval); spinInterval = null; }
+          return;
+        }
+
+        // Slow down as we approach the end
+        spinSpeed = 80 + Math.pow(spinCount / totalSpins, 2) * 300;
+        clearInterval(spinInterval);
+        spinInterval = setInterval(doSpin, spinSpeed);
+      }
+
+      spinInterval = setInterval(doSpin, spinSpeed);
+
+      function onKey(e) {
+        if (e.code === "Space") {
+          e.preventDefault();
+          e.stopPropagation();
+          if (spinning) return; // wait for spin to finish
+          if (selected) done(selected);
+        } else if (e.code === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          if (spinning) return;
+          // Pick the other team
+          const other = selected === "blue" ? "red" : "blue";
+          done(other);
+        }
+      }
+
+      function cleanup() {
+        window.removeEventListener("keydown", onKey, true);
+      }
+
+      window.addEventListener("keydown", onKey, true);
+    });
+  }
 
   function makeModal(content, onClose) {
     const backdrop = document.createElement("div");
