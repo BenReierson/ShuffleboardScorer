@@ -63,11 +63,26 @@
 
   if (chkDrift) chkDrift.addEventListener("change", () => {
     driftFeatureEnabled = chkDrift.checked;
-    if (driftFeatureEnabled) {
-      loadArucoLibs();
-    } else {
-      resetDrift();
-    }
+    
+      // Attempt ArUco marker detection for drift compensation (only if feature enabled)
+      let marker = null;
+      if (driftFeatureEnabled) {
+	loadArucoLibs();
+        marker = detectArucoMarker();
+        if (marker) {
+          State.drift.enabled = true;
+          State.drift.ref = { x: marker.center.x, y: marker.center.y };
+          State.drift.markerId = marker.id;
+          State.drift.offset = { x: 0, y: 0 };
+          State.drift.markerVisible = true;
+          State.drift.lastDetectTs = 0;
+          State.drift.missCount = 0;
+        } else {
+          resetDrift();
+        }
+      } else {
+        resetDrift();
+      }
   });
 
   // Short pitched tick — freq escalates as progress goes from 0→1
