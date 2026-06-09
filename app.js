@@ -329,6 +329,7 @@
       lastDetectTs: 0,
       missCount: 0,
     },
+    cameras: { devices: [], activeId: null },
   };
 
   function loadHistory() {
@@ -454,19 +455,43 @@
   }
   
   // ========== CAMERA ==========
-  async function startCamera() {
+  async function startCamera(deviceId) {
     try {
+      // Stop any existing stream before switching
+      if (video.srcObject) {
+        video.srcObject.getTracks().forEach(t => t.stop());
+        video.srcObject = null;
+      }
+
+      const videoConstraints = deviceId
+        ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+        : { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } };
+
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: "environment",
-          width: { ideal: 1920 },
-          height: { ideal: 1080 }
-        },
+        video: videoConstraints,
         audio: false
       });
       video.srcObject = stream;
       await video.play();
-      setStatus("Camera OK", "ok");
+
+      // Enumerate cameras and track active device
+      const allDevices = await navigator.mediaDevices.enumerateDevices();
+      State.cameras.devices = allDevices.filter(d => d.kind === "videoinput");
+      const trackLabel = stream.getVideoTracks()[0].label;
+      const activeDevice = State.cameras.devices.find(d => d.label === trackLabel);
+      State.cameras.activeId = activeDevice ? activeDevice.deviceId : (deviceId || null);
+
+      if (State.cameras.devices.length > 1) {
+        const label = trackLabel.length > 24 ? trackLabel.slice(0, 22) + "\u2026" : trackLabel;
+        setStatus("Camera " + label, "ok");
+        statusPill.style.cursor = "pointer";
+        statusPill.onclick = showCameraPicker;
+      } else {
+        setStatus("Camera OK", "ok");
+        statusPill.style.cursor = "";
+        statusPill.onclick = null;
+      }
+
       resizeCanvases();
       State.loopRunning = true;
       requestAnimationFrame(loop);
@@ -476,7 +501,45 @@
       panel.innerHTML = `<div class="hint">Camera access denied. Need HTTPS!</div>`;
     }
   }
-  
+
+  function showCameraPicker() {
+    const devices = State.cameras.devices;
+    if (devices.length < 2) return;
+
+    const cards = devices.map((d, i) => {
+      const name = d.label || ("Camera " + (i + 1));
+      const active = d.deviceId === State.cameras.activeId;
+      return `<div data-idx="${i}" style="
+        padding:14px 18px; margin:6px 0; border-radius:12px; cursor:pointer;
+        background:${active ? "#1d3552" : "var(--panel2)"};
+        border:1px solid ${active ? "#4aa3ff" : "var(--border)"};
+        color:${active ? "#fff" : "var(--text)"};
+        font-size:15px;
+      ">${active ? "\u25C9 " : "\u25CB "}${name}</div>`;
+    }).join("");
+
+    const html = `<div style="
+      background:var(--panel); border-radius:16px; padding:20px;
+      max-width:400px; width:100%; max-height:80vh; overflow:auto;
+    ">
+      <div style="font-size:16px; font-weight:700; margin-bottom:12px;">Select Camera</div>
+      ${cards}
+    </div>`;
+
+    const modal = makeModal(html);
+
+    modal.querySelectorAll("[data-idx]").forEach(el => {
+      el.addEventListener("click", () => {
+        const idx = parseInt(el.dataset.idx);
+        const selected = devices[idx];
+        modal.remove();
+        if (selected.deviceId !== State.cameras.activeId) {
+          startCamera(selected.deviceId);
+        }
+      });
+    });
+  }
+
   function resizeCanvases() {
     const rect = overlay.getBoundingClientRect();
     overlay.width = Math.round(rect.width * devicePixelRatio);
@@ -1836,10 +1899,24 @@
       video.style.display = "";
       btnTest.textContent = "Test";
       State.detectCache = { ts: 0, pucks: [] };
-      statusPill.style.cursor = "";
-      statusPill.onclick = null;
-      if (video.srcObject) setStatus("Camera OK", "ok");
-      else setStatus("Camera blocked", "bad");
+      if (video.srcObject) {
+        if (State.cameras.devices.length > 1) {
+          const track = video.srcObject.getVideoTracks()[0];
+          const label = track ? track.label : "";
+          const short = label.length > 24 ? label.slice(0, 22) + "\u2026" : label;
+          setStatus("Camera " + short, "ok");
+          statusPill.style.cursor = "pointer";
+          statusPill.onclick = showCameraPicker;
+        } else {
+          setStatus("Camera OK", "ok");
+          statusPill.style.cursor = "";
+          statusPill.onclick = null;
+        }
+      } else {
+        statusPill.style.cursor = "";
+        statusPill.onclick = null;
+        setStatus("Camera blocked", "bad");
+      }
     } else {
       testImageInput.click();
     }
