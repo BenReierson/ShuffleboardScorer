@@ -2027,6 +2027,20 @@
       });
       box.appendChild(cardsRow);
 
+      const startBtn = document.createElement("button");
+      startBtn.textContent = "Start Game";
+      Object.assign(startBtn.style, {
+        display:"none", margin:"0 auto 16px", padding:"12px 32px",
+        fontSize:"16px", fontWeight:"700", borderRadius:"12px",
+        background:"#1a4a2a", border:"1px solid #36d399", color:"#baf7dd",
+        cursor:"pointer",
+      });
+      startBtn.onclick = () => {
+        if (spinning || !selected) return;
+        done(selected);
+      };
+      box.appendChild(startBtn);
+
       const hint = document.createElement("div");
       hint.innerHTML = "<b>Space</b> to confirm &middot; <b>Esc</b> to pick the other team &middot; or <b>click</b> a team";
       Object.assign(hint.style, {
@@ -2045,6 +2059,7 @@
           dot.style.opacity = active ? "1" : "0.3";
           dot.style.transform = active ? "scale(1.2)" : "scale(1)";
         });
+        startBtn.style.display = (!spinning && selected) ? "block" : "none";
       }
 
       // Spin animation: rapidly alternate highlight, then slow down and stop
@@ -2064,6 +2079,7 @@
         if (isLast) {
           spinning = false;
           if (spinInterval) { clearInterval(spinInterval); spinInterval = null; }
+          updateHighlight();
           return;
         }
 
